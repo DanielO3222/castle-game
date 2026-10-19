@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const T = 32, N = 64, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -350,7 +350,7 @@ function spawnWave() {
     const [cx, cy] = centers[ei]; const near = c.filter(([x,y]) => Math.abs(x-cx) + Math.abs(y-cy) < 6); const [x,y] = near[Math.floor(Math.random()*near.length)] || c[0];
     const u = addU(k, 1, x + .5, y + .5); u.hp = u.mhp = Math.round(UNIT[k].hp * hpm); u.edge = edges[ei];
   });
-  S.wave.active = true; S.wave.next = S.t + 110;
+  S.wave.active = true; S.wave.next = S.t + 150;  // next wave waits until this one is beaten (or 2:30 max)
   toast('⚔ Wave ' + n + '! ' + list.length + ' enemies from the ' + edges.map(e => EDGE_NAMES[e]).join(' & '), 'bad big', 3500);
 }
 function sendWave() { if (S.over) return; S.wave.next = S.t; }
