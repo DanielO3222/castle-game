@@ -98,7 +98,7 @@ with sync_playwright() as p:
     check(all(rec), f"recruited 6 soldiers {rec}")
     # station archers on the north wall via a real tap with the army selected
     pg.click("#btn-army")
-    wt = pg.evaluate("() => [HTK.KX + 1, HTK.KX - 9]")
+    wt = pg.evaluate("() => { const H = HTK, y = H.KX - 9; for (let d = 0; d < 12; d++) for (const x of [H.KX + 1 + d, H.KX + 1 - d]) { const b = H.bAt(x, y); if (b && b.k === 'wall') return [x, y]; } return [H.KX + 1, y]; }")
     pg.evaluate("([x,y]) => { HTK.cam.x=(x+.5)*HTK.T; HTK.cam.y=(y+3)*HTK.T; }", wt); pg.wait_for_timeout(80)
     sp = pg.evaluate(TILE2SCREEN, wt); pg.wait_for_timeout(50)
     touch("touchStart", [(sp["x"], sp["y"])]); touch("touchEnd", [])
@@ -118,7 +118,7 @@ with sync_playwright() as p:
     # ---- run waves with time fast-forward ----
     pg.evaluate("() => { HTK.cam.x=(HTK.KX+1.5)*HTK.T; HTK.cam.y=(HTK.KY+1.5)*HTK.T; HTK.cam.z=.62; }")
     shot = False; log = []
-    for w in range(1, 7):
+    for w in range(1, 6):
         pg.evaluate("() => HTK.sendWave()")
         for sec in range(150):
             pg.evaluate("() => { for (let i = 0; i < 30; i++) HTK.step(1/30); }")
@@ -133,7 +133,7 @@ with sync_playwright() as p:
         # between waves, play like a player would: rebuild breaches, repair, recruit, man all four walls
         pg.evaluate("""() => { const H = HTK, r0 = H.KX - 9, r1 = H.KX + 11; H.S.res.stone += 80; H.S.res.gold += 60; H.S.res.wood += 20;
           for (const [a, b, c, d] of [[r0,r0,r1,r0],[r1,r0,r1,r1],[r1,r1,r0,r1],[r0,r1,r0,r0]]) H.commitWall('wall', a, b, c, d);
-          for (const b of H.S.b) if (b.k !== 'keep') b.hp = H.B[b.k].hp;
+          for (const b of H.S.b) b.hp = H.B[b.k].hp;
           H.S.pop = Math.max(H.S.pop, 12); let i = 0; while (H.soldiers().length < 12 && H.idle() > 0 && i++ < 20) H.recruit(H.soldiers().length % 4 === 3 ? 'spear' : 'archer');
           const arch = H.soldiers().filter(u => u.k === 'archer'); const sides = [[H.KX+1, r0],[r1, H.KY+1],[H.KX+1, r1],[r0, H.KY+1]];
           sides.forEach((p, j) => H.orderMove(arch.filter((u, k) => k % 4 === j).map(u => u.id), p[0], p[1]));

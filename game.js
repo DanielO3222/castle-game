@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-const VERSION = '1.0.2';
+const VERSION = '1.0.3';
 const T = 32, N = 64, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -268,9 +268,9 @@ function orderMove(ids, tx, ty) {
   return ok;
 }
 function nearestEnemyOf(u, r) { let best = null, bd = r; for (const e of S.u) if (e.tm !== u.tm && e.hp > 0) { const d = Math.hypot(e.x-u.x, e.y-u.y); if (d < bd) { bd = d; best = e; } } return best; }
-function shoot(fx, fy, tgt, dmg, team, h0 = 10) {
+function shoot(fx, fy, tgt, dmg, team, h0 = 10, src = 0) {
   const d = Math.hypot(tgt.x - fx, tgt.y - fy);
-  projectiles.push({sx:fx, sy:fy, tid:tgt.id, tx:tgt.x, ty:tgt.y, t:0, dur:Math.max(.15, d/13), dmg, team, h0});
+  projectiles.push({sx:fx, sy:fy, tid:tgt.id, tx:tgt.x, ty:tgt.y, t:0, dur:Math.max(.15, d/13), dmg, team, h0, src});
 }
 function hurtU(u, dmg) { u.hp -= dmg; if (u.hp <= 0 && !u.dead) { u.dead = true; puff(u.x*T, u.y*T, u.tm ? '#7a2a20' : '#2f4f8a', 6); if (u.tm === 1) S.kills++; } }
 function hurtB(b, dmg) { if (!byId.has(b.id) || S.over) return; b.hp -= dmg; if (Math.random() < .3) puff((b.x + B[b.k].w*Math.random())*T, (b.y + B[b.k].h*.6)*T, '#b5a68a', 1); if (b.hp <= 0) destroyB(b); }
@@ -288,6 +288,7 @@ function stepPlayerUnit(u, dt) {
   } else if (!u.path.length) {
     let tg = null, bd = d.aggro;
     for (const e of S.u) if (e.tm === 1 && e.hp > 0) { const dp = Math.hypot(e.x-u.px, e.y-u.py); if (dp < bd && !elevatedE(e)) { bd = dp; tg = e; } }
+    if (!tg && u.hitBy) { const a = uById(u.hitBy); if (a && a.hp > 0 && Math.hypot(a.x-u.px, a.y-u.py) < 8) tg = a; else u.hitBy = 0; }
     if (tg) {
       const dd = Math.hypot(tg.x-u.x, tg.y-u.y);
       if (dd < .75) { if (u.cd <= 0) { hurtU(tg, d.dmg); u.cd = d.cd; u.atk = .2; } }
@@ -310,7 +311,7 @@ function stepEnemy(u, dt) {
   let foe = null, fd = u.k === 'earcher' ? d.range : 1.8;
   for (const p of S.u) if (p.tm === 0 && p.hp > 0 && (u.k === 'earcher' || !p.el)) { const dd = Math.hypot(p.x-u.x, p.y-u.y); if (dd < fd) { fd = dd; foe = p; } }
   if (foe) {
-    if (u.k === 'earcher') { if (u.cd <= 0) { shoot(u.x, u.y, foe, d.dmg, 1, 10); u.cd = d.cd; } return; }
+    if (u.k === 'earcher') { if (u.cd <= 0) { shoot(u.x, u.y, foe, d.dmg, 1, 10, u.id); u.cd = d.cd; } return; }
     if (fd < .75) { if (u.cd <= 0) { hurtU(foe, d.dmg); u.cd = d.cd; u.atk = .2; } return; }
     const ox = u.x, oy = u.y; moveTo(u, foe.x, foe.y, d.spd, dt); if (!passT(tileOf(u)) || occ[tileOf(u)]) { u.x = ox; u.y = oy; } else return;
   }
@@ -334,8 +335,8 @@ let fieldVer = 0;
 const EDGE_NAMES = ['north','east','south','west'];
 function waveComp(n) {
   const hpm = 1 + 0.08*(n-1), list = [];
-  for (let i = 0; i < 3 + Math.floor(1.6*n); i++) list.push('raider');
-  for (let i = 0; i < (n >= 3 ? n-2 : 0); i++) list.push('earcher');
+  for (let i = 0; i < 3 + Math.floor(1.4*n); i++) list.push('raider');
+  for (let i = 0; i < (n >= 3 ? Math.ceil((n-2)*0.75) : 0); i++) list.push('earcher');
   for (let i = 0; i < (n >= 4 ? Math.floor((n-2)/2) : 0); i++) list.push('brute');
   return {list, hpm};
 }
@@ -397,7 +398,7 @@ function step(dt) {
     if (tg) { shoot(cx, cy, tg, sh.d, 0, b.k === 'keep' ? 60 : 50); b.cd = sh.cd; } }
   // projectiles
   for (const p of projectiles) { p.t += dt; const tg = uById(p.tid); if (tg && tg.hp > 0) { p.tx = tg.x; p.ty = tg.y; }
-    if (p.t >= p.dur) { p.done = true; if (tg && tg.hp > 0 && Math.hypot(tg.x-p.tx, tg.y-p.ty) < .6) hurtU(tg, p.dmg); } }
+    if (p.t >= p.dur) { p.done = true; if (tg && tg.hp > 0 && Math.hypot(tg.x-p.tx, tg.y-p.ty) < .6) { hurtU(tg, p.dmg); if (p.src) tg.hitBy = p.src; } } }
   projectiles = projectiles.filter(p => !p.done);
   if (S.u.some(u => u.dead)) { S.u = S.u.filter(u => !u.dead); sel = sel.filter(id => uById(id)); }
   for (const b of S.b) if (b.rise != null) { b.rise += dt*2.5; if (b.rise >= 1) delete b.rise; }
