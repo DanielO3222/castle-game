@@ -1,7 +1,7 @@
 'use strict';
 (() => {
-const VERSION = '1.2.0';
-const T = 32, N = 64, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
+const VERSION = '1.3.0';
+const T = 32, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
 const mini = $('mini'), mctx = mini.getContext('2d');
@@ -58,6 +58,7 @@ function vnoise(x, y, s) { const ix = Math.floor(x), iy = Math.floor(y), fx = x 
   const a = hash(ix,iy,s), b = hash(ix+1,iy,s), c = hash(ix,iy+1,s), d = hash(ix+1,iy+1,s); return a + (b-a)*u + (c-a)*v + (a-b-c+d)*u*v; }
 
 // ---------- state ----------
+let N = 64;                  // map size in tiles (48 / 64 / 96 for custom maps)
 let S = null;               // saved game state
 let ter = new Uint8Array(N*N);   // 0 grass 1 forest 2 rock 3 water
 let occ = new Int32Array(N*N);   // building id per tile
@@ -68,10 +69,15 @@ let projectiles = [], particles = [], workers = new Map();
 let paused = false, speedIdx = 0; const SPEEDS = [1,2,3];
 const idx = (x, y) => y*N + x;
 const inb = (x, y) => x >= 0 && y >= 0 && x < N && y < N;
-const KX = 31, KY = 31;   // keep top-left tile
+let KX = 31, KY = 31;   // keep top-left tile
+// terrain codes: 0 grass, 1 trees, 2 stone, 3 water, 4 stump, 5 iron, 6 dirt (decorative), 7 marsh (decorative, slow, can't build)
+function setMapSize(n) { N = n; ter = new Uint8Array(N*N); occ = new Int32Array(N*N); flow = new Float32Array(N*N); }
+const DEFAULT_CFG = {diff:'normal', first:240, between:90, win:0, siege:true};
+const DIFF = {easy:{count:.7, hp:.85}, normal:{count:1, hp:1}, hard:{count:1.35, hp:1.15}};
+const cfg = () => (S && S.cfg) || DEFAULT_CFG;
 
-function genTerrain(seed) {
-  ter = new Uint8Array(N*N);
+function genTerrain(seed, n = 64) {
+  setMapSize(n); KX = KY = Math.floor(n/2) - 1; const sc = n/64;
   const r = rng(seed);
   const kc = {x:KX+1.5, y:KY+1.5};
   const blob = (cx, cy, rad, type) => {
@@ -87,11 +93,11 @@ function genTerrain(seed) {
   const a0 = r()*Math.PI*2;
   let p = at(a0, 11.5); blob(p.x, p.y, 4.2, 1);
   p = at(a0 + 2.3, 11); blob(p.x, p.y, 2.6, 2);
-  for (let i = 0; i < 7; i++) { p = at(r()*Math.PI*2, 15 + r()*15); blob(p.x, p.y, 3 + r()*4, 1); }
-  for (let i = 0; i < 4; i++) { p = at(r()*Math.PI*2, 14 + r()*14); blob(p.x, p.y, 2 + r()*1.8, 2); }
-  for (let i = 0; i < 2; i++) { p = at(r()*Math.PI*2, 17 + r()*10); blob(p.x, p.y, 2.5 + r()*1.5, 3); }
+  for (let i = 0; i < Math.round(7*sc*sc); i++) { p = at(r()*Math.PI*2, (15 + r()*15)*sc); blob(p.x, p.y, 3 + r()*4, 1); }
+  for (let i = 0; i < Math.round(4*sc*sc); i++) { p = at(r()*Math.PI*2, (14 + r()*14)*sc); blob(p.x, p.y, 2 + r()*1.8, 2); }
+  for (let i = 0; i < Math.round(2*sc*sc); i++) { p = at(r()*Math.PI*2, (17 + r()*10)*sc); blob(p.x, p.y, 2.5 + r()*1.5, 3); }
   const r2 = rng(seed ^ 0x51ed);   // iron uses its own rng so older saves keep the same map
-  for (let i = 0; i < 3; i++) { const q = at(r2()*Math.PI*2, 16 + r2()*10); blob(q.x, q.y, 2 + r2()*.8, 5); }
+  for (let i = 0; i < Math.round(3*sc*sc); i++) { const q = at(r2()*Math.PI*2, (16 + r2()*10)*sc); blob(q.x, q.y, 2 + r2()*.8, 5); }
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     if (Math.hypot(x+.5-kc.x, y+.5-kc.y) < 7) ter[idx(x,y)] = 0;
     if (x === 0 || y === 0 || x === N-1 || y === N-1) { if (ter[idx(x,y)] >= 2) ter[idx(x,y)] = 0; }
@@ -105,6 +111,25 @@ function newState(seed) {
   addB('keep', KX, KY); addB('stockpile', KX+4, KY+1); addB('granary', KX-3, KY+1);
   reocc(); workers.clear(); projectiles = []; particles = []; stones = [];
 }
+// ---------- custom maps ----------
+function rleEncode(a) { let out = '', i = 0; while (i < a.length) { let j = i; while (j < a.length && a[j] === a[i]) j++; out += a[i] + (j - i).toString(36) + ','; i = j; } return out; }
+function rleDecode(str, n) { const a = new Uint8Array(n*n); let p = 0; for (const run of str.split(',')) { if (!run) continue; const v = +run[0], c = parseInt(run.slice(1), 36); a.fill(v, p, p + c); p += c; } return a; }
+function nearSpot(k, cx, cy) { let best = null, bd = 1e9; for (let y = cy - 8; y <= cy + 8; y++) for (let x = cx - 8; x <= cx + 8; x++) { const c = canPlace(k, x, y); if (!(c.ok || c.poor)) continue; const d = Math.hypot(x - cx, y - cy); if (d < bd) { bd = d; best = {x, y}; } } return best; }
+function newStateFromMap(m) {
+  const st = m.settings || {};
+  S = {v:1, ver:VERSION, seed:0, t:0, res:{wood:150, stone:80, iron:0, food:80, gold:60, ...(st.res || {})}, tw:{}, stumps:{}, pop:st.pop ?? 6, b:[], u:[], nid:1,
+       wave:{n:0, next:(st.first ?? DEFAULT_CFG.first), active:false}, kills:0, over:false, tut:0, starveT:0, popT:0,
+       cfg:{...DEFAULT_CFG, ...st, res:undefined, pop:undefined}, custom:{name:m.name, id:m.id, size:m.size, ter:m.ter, keep:m.keep, spawns:m.spawns}};
+  loadCustomTerrain(S.custom);
+  addB('keep', KX, KY); reocc();
+  for (const [k, dx] of [['stockpile', 4], ['granary', -3]]) { const p = nearSpot(k, KX + dx, KY + 1); if (p) { addB(k, p.x, p.y); reocc(); } }
+  workers.clear(); projectiles = []; particles = []; stones = [];
+}
+function loadCustomTerrain(c) {
+  setMapSize(c.size); ter = rleDecode(c.ter, c.size); KX = c.keep.x; KY = c.keep.y;
+  for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) ter[idx(KX+i, KY+j)] = 0;
+}
+function dirName(x, y) { const a = Math.atan2(y - (KY + 1.5), x - (KX + 1.5)); return ['east','south-east','south','south-west','west','north-west','north','north-east'][(Math.round(a/(Math.PI/4)) + 8) % 8]; }
 function addB(k, x, y, hp) { const b = {id:S.nid++, k, x, y, hp: hp ?? B[k].hp, cd:0}; S.b.push(b); byId.set(b.id, b); return b; }
 function reocc() {
   occ.fill(0); byId.clear();
@@ -131,7 +156,7 @@ function canPlace(k, x, y) {
   for (let j = 0; j < d.h; j++) for (let i = 0; i < d.w; i++) {
     const t = ter[idx(x+i, y+j)], o = occ[idx(x+i, y+j)];
     if (d.on) { if (t !== d.on) return {ok:false, why: d.on === 2 ? 'A Quarry must sit right on gray stone rocks 🪨' : 'An Iron Mine must sit right on rusty red iron rocks 🔩'}; }
-    else if (t !== 0 && t !== 4 && !(t === 1 && k === 'gate')) return {ok:false, why: t === 2 || t === 5 ? 'Can\'t build on rocks' : t === 3 ? 'Can\'t build on water' : t === 1 ? 'Trees are in the way. Pick open grass' : 'Needs open grass'};
+    else if (t !== 0 && t !== 4 && t !== 6 && !(t === 1 && k === 'gate')) return {ok:false, why: t === 7 ? 'Too marshy to build here' : t === 2 || t === 5 ? 'Can\'t build on rocks' : t === 3 ? 'Can\'t build on water' : t === 1 ? 'Trees are in the way. Pick open grass' : 'Needs open grass'};
     if (o) { const ob = byId.get(o); if (!((k === 'gate' || k === 'tower') && ob && (ob.k === 'wall' || ob.k === 'palisade'))) return {ok:false, why:'Something is already there'}; continue; }
   }
   if (d.near) {
@@ -169,7 +194,7 @@ function snapLine(x0, y0, x1, y1) {
 function wallPlan(k, x0, y0, x1, y1) {
   const tiles = snapLine(x0, y0, x1, y1), per = B[k].cost; let n = 0;
   for (const t of tiles) {
-    if (!inb(t.x, t.y) || t.x < 1 || t.y < 1 || t.x > N-2 || t.y > N-2 || (ter[idx(t.x,t.y)] > 1 && ter[idx(t.x,t.y)] !== 4)) { t.s = 'bad'; continue; }
+    if (!inb(t.x, t.y) || t.x < 1 || t.y < 1 || t.x > N-2 || t.y > N-2 || (ter[idx(t.x,t.y)] > 1 && ter[idx(t.x,t.y)] !== 4 && ter[idx(t.x,t.y)] !== 6)) { t.s = 'bad'; continue; }
     const o = bAt(t.x, t.y);
     if (o) { t.s = (o.k === k || o.k === 'gate' || o.k === 'tower' || (o.k === 'wall' && k === 'palisade')) ? 'skip' : (o.k === 'palisade' && k === 'wall') ? 'up' : 'bad'; if (t.s === 'up') n++; continue; }
     t.s = 'ok'; n++;
@@ -202,7 +227,7 @@ function destroyB(b) {
 function repairCost(b) { const d = B[b.k], f = 1 - b.hp/d.hp; const c = {}; for (const [r,v] of Object.entries(d.cost)) c[r] = Math.ceil(v*f*0.6); if (b.k === 'keep') c.stone = Math.ceil(f*60); return c; }
 
 // ---------- pathing ----------
-const passT = i => ter[i] === 0 || ter[i] === 4;   // trees, rocks, iron and water block all soldiers and enemies
+const passT = i => ter[i] === 0 || ter[i] === 4 || ter[i] === 6 || ter[i] === 7;   // trees, rocks, iron and water block all soldiers and enemies
 const walkF = i => { if (!passT(i)) return false; const o = occ[i]; if (!o) return true; const b = byId.get(o); return !!(b && B[b.k].walk); };
 class Heap { constructor() { this.a = []; } push(n, p) { const a = this.a; a.push([p,n]); let i = a.length-1; while (i > 0) { const q = (i-1) >> 1; if (a[q][0] <= a[i][0]) break; [a[q],a[i]] = [a[i],a[q]]; i = q; } }
   pop() { const a = this.a, top = a[0], last = a.pop(); if (a.length) { a[0] = last; let i = 0; for (;;) { const l = 2*i+1, r = l+1; let m = i; if (l < a.length && a[l][0] < a[m][0]) m = l; if (r < a.length && a[r][0] < a[m][0]) m = r; if (m === i) break; [a[m],a[i]] = [a[i],a[m]]; i = m; } } return top[1]; }
@@ -210,7 +235,7 @@ class Heap { constructor() { this.a = []; } push(n, p) { const a = this.a; a.pus
 const DIRS = [[1,0,1],[-1,0,1],[0,1,1],[0,-1,1],[1,1,1.414],[1,-1,1.414],[-1,1,1.414],[-1,-1,1.414]];
 function enterCost(i) {
   if (!passT(i)) return Infinity;
-  let c = 1; const o = occ[i];
+  let c = ter[i] === 7 ? 1.6 : 1; const o = occ[i];
   if (o) { const b = byId.get(o); if (b.k === 'keep') return 0; if (b.bridge) return 1; c += B[b.k].hp / 25; }
   return c;
 }
@@ -382,10 +407,11 @@ let fieldVer = 0; let stones = [];
 // ---------- waves ----------
 const EDGE_NAMES = ['north','east','south','west'];
 function waveComp(n) {
-  const hpm = 1 + 0.08*(n-1), list = [];
-  for (let i = 0; i < 3 + Math.floor(1.4*n); i++) list.push('raider');
-  for (let i = 0; i < (n >= 3 ? Math.ceil((n-2)*0.75) : 0); i++) list.push('earcher');
-  for (let i = 0; i < (n >= 4 ? Math.floor((n-2)/2) : 0); i++) list.push('brute');
+  const cf = cfg(), df = DIFF[cf.diff] || DIFF.normal, hpm = (1 + 0.08*(n-1))*df.hp, list = [], cm = v => Math.round(v*df.count);
+  for (let i = 0; i < Math.max(2, cm(3 + Math.floor(1.4*n))); i++) list.push('raider');
+  for (let i = 0; i < (n >= 3 ? cm(Math.ceil((n-2)*0.75)) : 0); i++) list.push('earcher');
+  for (let i = 0; i < (n >= 4 ? cm(Math.floor((n-2)/2)) : 0); i++) list.push('brute');
+  if (cf.siege === false) return {list, hpm};
   for (let i = 0; i < (n >= 5 ? Math.floor((n-3)/2) : 0); i++) list.push('ram');   // wave 5-6: 1, 7-8: 2 ...
   for (let i = 0; i < (n >= 7 ? Math.floor((n-5)/2) : 0); i++) list.push('stower');
   for (let i = 0; i < (n >= 8 ? Math.floor((n-6)/2) : 0); i++) list.push('catapult');
@@ -396,16 +422,19 @@ function waveText(n) { const c = {}; for (const k of waveComp(n).list) c[k] = (c
 function spawnWave() {
   if (flowDirty) { computeFlow(); fieldVer++; }
   S.wave.n++; const n = S.wave.n, {list, hpm} = waveComp(n);
-  const edges = [0,1,2,3].sort(() => Math.random() - .5).slice(0, n < 3 ? 1 : n < 6 ? 2 : 3);
-  const cands = edges.map(e => { const c = []; for (let i = 4; i < N-4; i++) { const [x,y] = e === 0 ? [i,0] : e === 1 ? [N-1,i] : e === 2 ? [i,N-1] : [0,i]; if (isFinite(flow[idx(x,y)])) c.push([x,y]); } return c; });
+  const sp = S.custom && S.custom.spawns && S.custom.spawns.length ? S.custom.spawns : null;
+  const edges = (sp ? sp.map((_, i) => 10 + i) : [0,1,2,3]).sort(() => Math.random() - .5).slice(0, n < 3 ? 1 : n < 6 ? 2 : 3);
+  const cands = edges.map(e => { const c = [];
+    if (e >= 10) { const q = sp[e - 10]; for (let y = q.y - 2; y <= q.y + 2; y++) for (let x = q.x - 2; x <= q.x + 2; x++) if (inb(x, y) && isFinite(flow[idx(x,y)]) && !occ[idx(x,y)]) c.push([x,y]); return c; }
+    for (let i = 4; i < N-4; i++) { const [x,y] = e === 0 ? [i,0] : e === 1 ? [N-1,i] : e === 2 ? [i,N-1] : [0,i]; if (isFinite(flow[idx(x,y)])) c.push([x,y]); } return c; });
   const centers = cands.map(c => c[Math.floor(Math.random()*c.length)] || [0,0]);
   list.forEach((k, i) => {
     const ei = i % edges.length, c = cands[ei]; if (!c.length) return;
     const [cx, cy] = centers[ei]; const near = c.filter(([x,y]) => Math.abs(x-cx) + Math.abs(y-cy) < 6); const [x,y] = near[Math.floor(Math.random()*near.length)] || c[0];
     const u = addU(k, 1, x + .5, y + .5); u.hp = u.mhp = Math.round(UNIT[k].hp * hpm); u.edge = edges[ei];
   });
-  S.wave.active = true; S.wave.next = S.t + 150;  // next wave waits until this one is beaten (or 2:30 max)
-  toast('⚔ Wave ' + n + ' from the ' + edges.map(e => EDGE_NAMES[e]).join(' & ') + ': ' + waveText(n), 'bad big', 4000);
+  S.wave.active = true; S.wave.next = S.t + Math.max(150, cfg().between + 60);  // next wave waits until this one is beaten (or 2:30 max)
+  toast('⚔ Wave ' + n + ' from the ' + [...new Set(edges.map(e => e >= 10 ? dirName(sp[e-10].x, sp[e-10].y) : EDGE_NAMES[e]))].join(' & ') + ': ' + waveText(n), 'bad big', 4000);
 }
 function sendWave() { if (S.over) return; S.wave.next = S.t; }
 
@@ -500,7 +529,8 @@ function step(dt) {
   if (S.wave.active && !S.u.some(u => u.tm === 1) && S.wave.n > 0) {
     S.wave.active = false; S.beaten = (S.beaten || 0) + 1; const bonus = 10 + 5*S.wave.n; S.res.gold += bonus;
     toast('🏆 Wave ' + S.wave.n + ' defeated! +' + bonus + '🪙', 'big', 3500);
-    S.wave.next = Math.min(S.wave.next, S.t + 90);
+    S.wave.next = Math.min(S.wave.next, S.t + cfg().between);
+    if (cfg().win > 0 && S.beaten >= cfg().win && !S.won) { S.won = true; setTimeout(() => victory(), 1200); }
   }
 }
 
@@ -522,12 +552,14 @@ function viewRect() { const t = $('top').getBoundingClientRect().bottom, b = $('
 function buildTerrain() {
   const s = 512, nc = document.createElement('canvas'); nc.width = nc.height = s; const nx = nc.getContext('2d'), id = nx.createImageData(s, s);
   for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) {
-    const tx = Math.floor(x/8), ty = Math.floor(y/8), t = ter[idx(tx, ty)];
+    const tx = Math.floor(x/(512/N)), ty = Math.floor(y/(512/N)), t = ter[idx(tx, ty)];
     const n = vnoise(x*.05, y*.05, 7)*.6 + vnoise(x*.2, y*.2, 9)*.4;
     let r, g, b;
     if (t === 3) { r = 52 + n*20; g = 96 + n*25; b = 130 + n*30; }
     else if (t === 2) { r = 112 + n*30; g = 112 + n*26; b = 96 + n*22; }
     else if (t === 5) { r = 120 + n*30; g = 84 + n*20; b = 64 + n*16; }
+    else if (t === 6) { r = 134 + n*30; g = 106 + n*24; b = 70 + n*16; }
+    else if (t === 7) { r = 62 + n*20; g = 92 + n*24; b = 72 + n*20; }
     else if (t === 1) { r = 54 + n*18; g = 84 + n*24; b = 38 + n*12; }
     else { r = 92 + n*36; g = 128 + n*34; b = 56 + n*16; }
     const dk = Math.hypot(tx - KX - 1.5, ty - KY - 1.5); if (t === 0 && dk < 6.5) { const f = Math.max(0, 1 - dk/6.5)*.55; r += (150-r)*f; g += (128-g)*f; b += (84-b)*f; }
@@ -543,6 +575,8 @@ function buildTerrain() {
     if (r() < .04) { c.fillStyle = ['#f2e27a','#f4f0e6','#d77ab0'][Math.floor(r()*3)]; c.fillRect(x, y - 2, 2, 2); } }
   // water shimmer + shore
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { if (ter[idx(x,y)] !== 3) continue; c.strokeStyle = '#8fc3e0aa'; c.lineWidth = 1.2; c.beginPath(); c.moveTo(x*T + 6 + r()*8, y*T + 10 + r()*12); c.lineTo(x*T + 16 + r()*8, y*T + 10 + r()*12); c.stroke(); }
+  // marsh reeds
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { if (ter[idx(x,y)] !== 7) continue; c.strokeStyle = '#3f6a3a'; c.lineWidth = 1.2; for (let k = 0; k < 4; k++) { const px = x*T + 4 + r()*24, py = y*T + 8 + r()*22; c.beginPath(); c.moveTo(px, py); c.lineTo(px + (r()-.5)*3, py - 7); c.stroke(); } c.fillStyle = '#5a8aa066'; c.fillRect(x*T + 6 + r()*10, y*T + 6 + r()*14, 9, 3); }
   // rocks (baked)
   const rocks = []; for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (ter[idx(x,y)] === 2 || ter[idx(x,y)] === 5) rocks.push([x, y]);
   if (IMG.rock) for (const [x, y] of rocks) { const im = ter[idx(x,y)] === 5 ? IMG.iron : IMG.rock, w = T*1.5, h = w*IMG.rock.height/IMG.rock.width; c.drawImage(im, x*T + T/2 - w/2 + (r()-.5)*6, (y+1)*T - h + 4 + (r()-.5)*4, w, h); }
@@ -550,7 +584,7 @@ function buildTerrain() {
   c.fillStyle = '#00000022'; for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (ter[idx(x,y)] === 1 || ter[idx(x,y)] === 4) { c.beginPath(); c.ellipse(x*T + T/2, y*T + T*.7, T*.7, T*.35, 0, 0, 7); c.fill(); }
   // minimap base
   miniBase = document.createElement('canvas'); miniBase.width = miniBase.height = N; const m = miniBase.getContext('2d');
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const t = ter[idx(x,y)]; m.fillStyle = ['#5d8a3a','#2f5a22','#8a8a7a','#3a6a94','#4a7030','#a0522d'][t]; m.fillRect(x, y, 1, 1); }
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const t = ter[idx(x,y)]; m.fillStyle = ['#5d8a3a','#2f5a22','#8a8a7a','#3a6a94','#4a7030','#a0522d','#8a6a44','#4a6a4a'][t]; m.fillRect(x, y, 1, 1); }
   treeList = []; for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (ter[idx(x,y)] === 1 || ter[idx(x,y)] === 4) treeList.push({i: idx(x,y), x: x + .5 + (hash(x,y,1)-.5)*.3, y: y + .9 + (hash(x,y,2)-.5)*.2, s: 1.45 + hash(x,y,3)*.35, f: hash(x,y,4) < .5});
   treeById = new Map(treeList.map(t => [t.i, t]));
 }
@@ -673,6 +707,7 @@ const pointers = new Map(); let gest = null;
 function tileAtScreen(sx, sy) { const w = s2w(sx, sy); return {x: Math.floor(w.x/T), y: Math.floor(w.y/T)}; }
 function ghostTile(sx, sy) { const d = B[tool], w = s2w(sx, sy); return {x: Math.round(w.x/T - d.w/2), y: Math.round(w.y/T - d.h/2)}; }
 cv.addEventListener('pointerdown', e => {
+  if (!running) return;
   cv.setPointerCapture(e.pointerId); pointers.set(e.pointerId, {x:e.clientX, y:e.clientY}); hideUndoSoon();
   if (pointers.size === 1) {
     lastFinger = {x:e.clientX, y:e.clientY};
@@ -688,6 +723,7 @@ cv.addEventListener('pointerdown', e => {
   }
 });
 cv.addEventListener('pointermove', e => {
+  if (!running) return;
   if (!pointers.has(e.pointerId)) { hoverMouse(e); return; }
   const p = pointers.get(e.pointerId), px = p.x, py = p.y; p.x = e.clientX; p.y = e.clientY; lastFinger = {x:e.clientX, y:e.clientY};
   if (!gest) return;
@@ -701,6 +737,7 @@ cv.addEventListener('pointermove', e => {
   if (gest.kind === 'pan' || gest.kind === 'pan2') { cam.x -= (e.clientX - px)/cam.z; cam.y -= (e.clientY - py)/cam.z; clampCam(); }
 });
 function endPointer(e, cancel) {
+  if (!running) return;
   if (!pointers.has(e.pointerId)) return; pointers.delete(e.pointerId);
   if (gest && gest.kind === 'pinch') { gest = pointers.size === 1 ? {kind:'pan2'} : null; ghost = tool && B[tool] && !B[tool].line ? ghost : null; return; }
   if (pointers.size) return;
@@ -712,7 +749,7 @@ function endPointer(e, cancel) {
 }
 cv.addEventListener('pointerup', e => endPointer(e, false));
 cv.addEventListener('pointercancel', e => endPointer(e, true));
-cv.addEventListener('wheel', e => { e.preventDefault(); const w0 = s2w(e.clientX, e.clientY); cam.z *= Math.exp(-e.deltaY*.0015); clampCam(); cam.x = w0.x - (e.clientX - W/2)/cam.z; cam.y = w0.y - (e.clientY - H/2)/cam.z; clampCam(); }, {passive:false});
+cv.addEventListener('wheel', e => { if (!running) return; e.preventDefault(); const w0 = s2w(e.clientX, e.clientY); cam.z *= Math.exp(-e.deltaY*.0015); clampCam(); cam.x = w0.x - (e.clientX - W/2)/cam.z; cam.y = w0.y - (e.clientY - H/2)/cam.z; clampCam(); }, {passive:false});
 function hoverMouse(e) { if (e.pointerType === 'mouse' && tool && B[tool] && !B[tool].line) ghost = ghostTile(e.clientX, e.clientY); }
 function demoAt(sx, sy, hit) { const t = tileAtScreen(sx, sy), b = bAt(t.x, t.y); if (b && !hit.has(b.id)) { hit.add(b.id); if (b.k === 'keep') toast("You can't demolish the Keep", 'bad'); else demolish(b, .5); } }
 function handleTap(sx, sy) {
@@ -1014,7 +1051,7 @@ function save() { if (!S || S.over) return; const s = serialize(); memSave = s; 
 function loadSaved() { let s = memSave; try { s = localStorage.getItem(SAVE_KEY) || s; } catch (e) {} if (!s) return null; try { const o = JSON.parse(s); return o && o.v === 1 ? o : null; } catch (e) { return null; } }
 function clearSave() { memSave = null; try { localStorage.removeItem(SAVE_KEY); } catch (e) {} }
 function restore(o) {
-  S = o; genTerrain(S.seed); for (const i of S.cleared || []) ter[i] = 0;
+  S = o; if (S.custom) loadCustomTerrain(S.custom); else genTerrain(S.seed); for (const i of S.cleared || []) ter[i] = 0;
   S.res.iron = S.res.iron || 0; S.tw = S.tw || {}; S.stumps = S.stumps || {}; for (const k in S.stumps) ter[+k] = 4;
   for (const b of S.b) { const d = B[b.k]; if (!d || d.on) continue; for (let j = 0; j < d.h; j++) for (let i = 0; i < d.w; i++) { const q = idx(b.x+i, b.y+j); if (ter[q] === 2 || ter[q] === 5) ter[q] = 0; } } for (const b of S.b) b.cd = 0;
   for (const u of S.u) { u.path = []; u.cd = 0; u.an = 0; u.jx = (Math.random()-.5)*.45; u.jy = (Math.random()-.5)*.45; }
@@ -1037,22 +1074,31 @@ function showTitle() {
   const sv = loadSaved();
   overlay(`<h1>Hold the Keep</h1><p>Build your castle. Draw your walls. Survive the siege.</p>
     ${sv ? `<button class="btn green" data-o="continue">Continue · Wave ${sv.wave.n + (sv.wave.active ? 0 : 1)}</button>` : ''}
-    <button class="btn ${sv ? '' : 'green'}" data-o="new">New Game</button>${HOW}<p style="font-size:11px;opacity:.6">v${VERSION}</p>`);
+    <button class="btn ${sv ? '' : 'green'}" data-o="new">New Game <small>random map</small></button>
+    <button class="btn" data-o="custom">Play Custom Map</button><button class="btn" data-o="editor">🛠 Map Editor</button>${HOW}<p style="font-size:11px;opacity:.6">v${VERSION}</p>`);
 }
 function showMenu() {
   const was = paused; paused = true; setSpeedLabel();
   overlay(`<h2>Paused</h2><button class="btn green" data-o="resume">Resume</button><button class="btn" data-o="save">Save game</button>
-    <button class="btn" data-o="how">How to play</button><button class="btn red" data-o="newconfirm">New game</button><p style="font-size:12px;opacity:.7">Wave ${S.wave.n} · Score ${score()} · auto-saves every 10 s</p>`);
+    <button class="btn" data-o="how">How to play</button><button class="btn red" data-o="newconfirm">New game</button><button class="btn" data-o="mainmenu">Main menu</button><p style="font-size:12px;opacity:.7">Wave ${S.wave.n} · Score ${score()} · auto-saves every 10 s</p>`);
   $('ov-card').dataset.was = was ? '1' : '';
 }
 const score = () => S.wave.n*100 - (S.wave.active ? 100 : 0) + S.kills*10;
+function victory() { paused = true; setSpeedLabel(); overlay(`<h2>🏆 Victory!</h2><p>You survived all <b>${cfg().win}</b> waves${S.custom ? ' on <b>' + S.custom.name + '</b>' : ''}.</p><p style="font-size:20px">Score: <b>${score()}</b></p>
+  <button class="btn green" data-o="keepgoing">Keep playing (endless)</button><button class="btn" data-o="mainmenu">Main menu</button>`); }
 function gameOver() {
   S.over = true; clearSave(); const survived = Math.max(0, S.wave.n - 1);
-  setTimeout(() => overlay(`<h2>The Keep has fallen</h2><p>You held out through <b>${survived}</b> wave${survived === 1 ? '' : 's'} and defeated <b>${S.kills}</b> enemies.</p><p style="font-size:20px">Score: <b>${score()}</b></p><button class="btn green" data-o="new">Play again</button>`), 900);
+  setTimeout(() => overlay(`<h2>The Keep has fallen</h2><p>You held out through <b>${survived}</b> wave${survived === 1 ? '' : 's'} and defeated <b>${S.kills}</b> enemies.</p><p style="font-size:20px">Score: <b>${score()}</b></p>${S.custom ? `<button class="btn green" data-o="replay">Play this map again</button>` : `<button class="btn green" data-o="new">Play again</button>`}<button class="btn" data-o="mainmenu2">Main menu</button>`), 900);
 }
 $('overlay').addEventListener('click', e => {
   const a = e.target.closest('[data-o]')?.dataset.o; if (!a) return;
   if (a === 'continue') { restore(loadSaved()); start(); }
+  else if (a === 'custom') window.HTKED && HTKED.pickToPlay();
+  else if (a === 'editor') window.HTKED && HTKED.openList();
+  else if (a === 'mainmenu') { save(); running = false; showTitle(); }
+  else if (a === 'mainmenu2') { running = false; showTitle(); }
+  else if (a === 'replay') { const m = window.HTKED && HTKED.get(S.custom.id); if (m) startCustom(m); else showTitle(); }
+  else if (a === 'keepgoing') { paused = false; setSpeedLabel(); closeOverlay(); }
   else if (a === 'new') { clearSave(); newState((Math.random()*1e9) | 0); start(); }
   else if (a === 'resume') { paused = !!$('ov-card').dataset.was; setSpeedLabel(); closeOverlay(); }
   else if (a === 'save') { save(); toast('Game saved'); paused = !!$('ov-card').dataset.was; setSpeedLabel(); closeOverlay(); }
@@ -1066,6 +1112,8 @@ function start() {
   running = true; renderItems(); updateHint(); renderSheet(); updateHud(); tutCheck(); save();
 }
 
+function startCustom(m) { clearSave(); newStateFromMap(m); start(); }
+function stopGame() { running = false; }
 // ---------- boot ----------
 addEventListener('resize', resize); resize();
 const fitFabs = () => { const h = innerHeight - $('bottom').getBoundingClientRect().top; const land = matchMedia('(orientation:landscape) and (max-height:520px)').matches;
@@ -1081,5 +1129,5 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 
 // test hooks
 window.HTK = {get S() { return S; }, B, UNIT, step, place, canPlace, commitWall, wallPlan, recruit, orderMove, spawnWave, sendWave, computeFlow, cam, s2w, w2s, newState, start, save, loadSaved, restore,
-  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, N, T, KX, KY, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }};
+  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
 })();
