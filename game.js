@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 const T = 32, N = 64, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -900,6 +900,9 @@ function start() {
 
 // ---------- boot ----------
 addEventListener('resize', resize); resize();
+const fitFabs = () => { const h = innerHeight - $('bottom').getBoundingClientRect().top; const land = matchMedia('(orientation:landscape) and (max-height:520px)').matches;
+  for (const id of ['btn-army','btn-undo']) $(id).style.bottom = land ? '' : (h + 10) + 'px'; };
+if (window.ResizeObserver) new ResizeObserver(fitFabs).observe($('bottom')); addEventListener('resize', fitFabs);
 document.addEventListener('gesturestart', e => e.preventDefault());
 loadAssets().then(() => { showTitle(); requestAnimationFrame(frame); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
