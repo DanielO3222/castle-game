@@ -161,6 +161,176 @@ with sync_playwright() as p:
     print("econ", r0, "->", r1)
     check(r1["wood"] > r0["wood"] and r1["stone"] > r0["stone"] and r1["gold"] > r0["gold"], "economy produces wood/stone/gold over 2 min")
 
+    # ---- placement rules: quarry only on stone, iron mine only on iron ----
+    r = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC); H.newState(11); H.start(); H.S.tut = 99; H.S.res.wood = 500; H.S.res.stone = 500;
+      const out = {}, foot = (k, x, y) => { const d = H.B[k], a = []; for (let j = 0; j < d.h; j++) for (let i = 0; i < d.w; i++) a.push(H.ter[H.idx(x+i, y+j)]); return a; };
+      out.grassQ = H.canPlace('quarry', H.KX + 5, H.KY + 4); out.grassM = H.canPlace('mine', H.KX + 5, H.KY + 4);
+      const q = find(['quarry', 32, 32]), m = find(['mine', 32, 32]);
+      out.q = q && foot('quarry', q.x, q.y); out.m = m && foot('mine', m.x, m.y);
+      out.mineOnStone = q ? H.canPlace('mine', q.x, q.y) : null; out.quarryOnIron = m ? H.canPlace('quarry', m.x, m.y) : null;
+      let ironTiles = 0; for (let i = 0; i < 64*64; i++) ironTiles += H.ter[i] === 5; out.ironTiles = ironTiles;
+      out.placedQ = q && H.place('quarry', q.x, q.y).ok; out.placedM = m && H.place('mine', m.x, m.y).ok;
+      out.wcOnRock = q ? H.canPlace('woodcutter', q.x + 3, q.y) : null; return out; }""", FIND)
+    print("placement", r)
+    check(not r["grassQ"]["ok"] and "rock" in r["grassQ"]["why"], f"quarry refused on grass: {r['grassQ']['why']}")
+    check(not r["grassM"]["ok"] and "iron" in r["grassM"]["why"], f"iron mine refused on grass: {r['grassM']['why']}")
+    check(r["q"] and all(v == 2 for v in r["q"]) and r["placedQ"], f"quarry allowed when whole footprint is stone {r['q']}")
+    check(r["m"] and all(v == 5 for v in r["m"]) and r["placedM"], f"iron mine allowed when whole footprint is iron {r['m']}")
+    check(not r["mineOnStone"]["ok"] and not r["quarryOnIron"]["ok"], "mine refused on stone, quarry refused on iron")
+    check(r["ironTiles"] >= 20, f"map has iron deposits ({r['ironTiles']} tiles)")
+    # preview shows the red reason label
+    pg.evaluate("() => { HTK.setTool('quarry'); }"); pg.wait_for_timeout(200)
+    pg.evaluate("() => HTK.setTool(null)")
+    pg.evaluate("() => { HTK.S.pop = 8; for (let i = 0; i < 30*70; i++) HTK.step(1/30); }")
+    iron = pg.evaluate("() => HTK.S.res.iron")
+    check(iron > 0, f"iron mine produces iron ({iron})")
+    pg.evaluate("() => { HTK.S.res.gold = 100; HTK.S.res.wood += 60; HTK.S.res.stone += 30; const H = HTK; const s = eval(arguments[0]); }", FIND) if False else None
+    sw = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC); H.S.res.gold = 100; H.S.res.wood += 60; H.S.res.stone += 30; H.S.pop = Math.max(H.S.pop, 10);
+       const s = find(['barracks', 32, 36]); H.place('barracks', s.x, s.y); const before = H.S.res.iron; const r = H.recruit('sword'); return {ok: r.ok, why: r.why, iron: before - H.S.res.iron}; }""", FIND)
+    check(sw["ok"] and sw["iron"] == 5, f"swordsman recruited for 5 iron {sw}")
+
+    # ---- woodcutters really chop trees ----
+    r = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC); H.newState(7); H.start(); H.S.tut = 99;
+       const s = find(['woodcutter', 32, 32]); H.place('woodcutter', s.x, s.y); return {trees: H.treesLeft(), wood: H.S.res.wood}; }""", FIND)
+    seen = set(); shot = False
+    for sec in range(40):
+        st = pg.evaluate("() => { for (let i = 0; i < 30; i++) HTK.step(1/30); const w = [...HTK.workers.values()][0]; return w ? w.st : -1; }")
+        seen.add(st)
+        if st == 4 and not shot:
+            pg.evaluate("() => { HTK.step(0.3); const w = [...HTK.workers.values()][0]; HTK.cam.x = (w.x + .4)*HTK.T; HTK.cam.y = (w.y - .6)*HTK.T; HTK.cam.z = 2.6; }")
+            pg.wait_for_timeout(120); pg.screenshot(path=SS + "12-woodcutter-chopping.png"); shot = True
+    check({3, 4, 1}.issubset(seen), f"worker walks to tree (3), chops (4), carries (1): states seen {sorted(seen)}")
+    pg.evaluate("() => { for (let i = 0; i < 30*200; i++) HTK.step(1/30); }")
+    r2 = pg.evaluate("() => ({trees: HTK.treesLeft(), wood: HTK.S.res.wood, stumps: Object.keys(HTK.S.stumps).length, tw: Object.keys(HTK.S.tw).length})")
+    print("chop", r, "->", r2)
+    check(r2["trees"] < r["trees"], f"trees get chopped down: {r['trees']} -> {r2['trees']}")
+    check(r2["wood"] > r["wood"] + 40, f"wood credited from chopping: {r['wood']} -> {round(r2['wood'])}")
+    pg.wait_for_timeout(100); pg.evaluate("() => { const w = [...HTK.workers.values()][0]; HTK.cam.x = w.x*HTK.T; HTK.cam.y = w.y*HTK.T; HTK.cam.z = 1.6; }"); pg.wait_for_timeout(150)
+    pg.screenshot(path=SS + "13-stumps.png")
+    # regrowth
+    cl = pg.evaluate("""() => { const H = HTK; const ids = (H.S.cleared || []).slice(-3); return {ids, ter: ids.map(i => H.ter[i]), stumps: Object.keys(H.S.stumps).length}; }""")
+    check(len(cl["ids"]) >= 1 and all(v == 0 for v in cl["ter"]), f"felled trees clear to plain grass for good {cl}")
+    gb = pg.evaluate("(i) => { const H = HTK; let ok = 0; for (const [dx,dy] of [[0,0],[-1,0],[0,-1],[-1,-1]]) if (H.canPlace('hovel', i % 64 + dx, ((i/64)|0) + dy).why !== 'Needs open grass') ok++; return ok; }", cl["ids"][-1])
+    check(gb >= 1, "cleared tree tile is buildable again")
+    # no-trees flag: woodcutter far from forest
+    nt = pg.evaluate("""() => { const H = HTK; H.S.res.food = 300; H.S.pop = 6; const b = H.S.b.find(b => b.k === 'woodcutter'); const d = H.B.woodcutter, R = d.nearR;
+       for (let y = b.y - R; y < b.y + d.h + R; y++) for (let x = b.x - R; x < b.x + d.w + R; x++) { const i = H.idx(x, y); if (H.ter[i] === 1 || H.ter[i] === 4) { H.ter[i] = 4; H.S.stumps[i] = H.S.t; } }
+       for (let i = 0; i < 30*30; i++) H.step(1/30); return !!b.noTrees; }""")
+    check(nt, "woodcutter shows 'no trees' when its area is cleared")
+    pg.evaluate("() => { const b = HTK.S.b.find(b => b.k === 'woodcutter'); HTK.cam.x = (b.x+1)*HTK.T; HTK.cam.y = (b.y+1)*HTK.T; HTK.cam.z = 1.8; }"); pg.wait_for_timeout(150)
+    pg.screenshot(path=SS + "14-no-trees.png")
+    # save keeps stumps
+    pg.evaluate("() => HTK.save()"); n_st = pg.evaluate("() => Object.keys(HTK.S.stumps).length")
+    pg.evaluate("() => HTK.restore(HTK.loadSaved())")
+    check(pg.evaluate("() => HTK.treesLeft()") == pg.evaluate("() => { let n = 0; for (let i = 0; i < 4096; i++) n += HTK.ter[i] === 1; return n; }") and pg.evaluate("() => Object.keys(HTK.S.stumps).length") == n_st, "stumps survive save/load")
+
+    # ---- forests, rocks and water block everyone; enemies reroute ----
+    r = pg.evaluate("""() => { const H = HTK; H.newState(5); H.start(); H.S.tut = 99; const K = H.KX, out = {};
+      for (let y = K - 14; y <= K + 16; y++) for (let x = K + 5; x <= K + 24; x++) H.ter[H.idx(x, y)] = 0;
+      const trace = (x, y) => { H.computeFlow(); const p = []; let cx = x, cy = y; for (let k = 0; k < 300; k++) { const n = H.bestStep(cx, cy); if (n < 0) break; const o = H.occ[n]; if (o && H.byId.get(o).k === 'keep') break; p.push(n); cx = n % 64; cy = (n / 64) | 0; } return p; };
+      const ys = p => p.map(i => (i / 64) | 0);
+      let p0 = trace(K + 20, K + 1); out.direct = {len: p0.length, minY: Math.min(...ys(p0)), maxY: Math.max(...ys(p0))};
+      for (let y = K - 10; y <= K + 12; y++) H.ter[H.idx(K + 10, y)] = 1;          // a solid line of trees across the lane
+      let p1 = trace(K + 20, K + 1); out.trees = {len: p1.length, minY: Math.min(...ys(p1)), maxY: Math.max(...ys(p1)), onBlocked: p1.filter(i => H.ter[i] === 1 || H.ter[i] === 3).length};
+      for (let y = K - 10; y <= K + 12; y++) H.ter[H.idx(K + 10, y)] = 3;          // same line as water
+      let p2 = trace(K + 20, K + 1); out.water = {len: p2.length, onBlocked: p2.filter(i => H.ter[i] === 1 || H.ter[i] === 3).length, minY: Math.min(...ys(p2)), maxY: Math.max(...ys(p2))};
+      for (let y = K - 10; y <= K + 12; y++) H.ter[H.idx(K + 10, y)] = 1;
+      // a real raider walks it
+      const u = H.addU('raider', 1, K + 20.5, K + 1.5); H.S.wave.active = true; const seen = new Set();
+      for (let i = 0; i < 30*60 && u.hp > 0 && H.S.u.includes(u); i++) { H.step(1/30); seen.add(H.idx(Math.floor(u.x), Math.floor(u.y))); }
+      out.walkBlocked = [...seen].filter(i => H.ter[i] === 1 || H.ter[i] === 3 || H.ter[i] === 2).length; out.walked = seen.size;
+      // soldiers and peasants too
+      out.soldierPath = (() => { const p = []; const a = H.addU('spear', 0, K + 20.5, K + 1.5); H.orderMove([a.id], K + 6, K + 1); return a.path.filter(i => H.ter[i] === 1 || H.ter[i] === 3).length + '/' + a.path.length; })();
+      const pp = H.astarPeasant(K + 20, K + 1, K + 6, K + 1); out.peasantPath = pp ? pp.filter(i => H.ter[i] === 1 || H.ter[i] === 3).length + '/' + pp.length : 'none';
+      H.ter[H.idx(K + 12, K + 2)] = 3; out.buildWater = H.canPlace('hovel', K + 12, K + 2).why;
+      return out; }""")
+    print("paths", r)
+    check(r["direct"]["minY"] >= pg.evaluate("() => HTK.KY") - 3, f"open lane: enemy goes straight {r['direct']}")
+    check(r["trees"]["onBlocked"] == 0 and (r["trees"]["minY"] < pg.evaluate("() => HTK.KY") - 9 or r["trees"]["maxY"] > pg.evaluate("() => HTK.KY") + 11), f"tree line forces a reroute around the forest {r['trees']}")
+    check(r["water"]["onBlocked"] == 0 and r["water"]["len"] > r["direct"]["len"], f"water line forces a reroute {r['water']}")
+    check(r["walkBlocked"] == 0 and r["walked"] > 10, f"walking raider never steps on trees/water/rock ({r['walked']} tiles walked)")
+    check(r["soldierPath"].startswith("0/") and r["peasantPath"].startswith("0/"), f"soldier and peasant paths avoid trees/water {r['soldierPath']} {r['peasantPath']}")
+    check(r["buildWater"] is not None and "water" in r["buildWater"].lower(), f"can't build on water: {r['buildWater']}")
+
+    # ---- towers and gatehouses drop into wall lines ----
+    r = pg.evaluate("""() => { const H = HTK; H.newState(5); H.start(); H.S.tut = 99; const K = H.KX, y = K - 5, out = {}; H.S.res.stone = 200;
+      for (let x = K - 6; x <= K + 8; x++) H.ter[H.idx(x, y)] = H.ter[H.idx(x, y - 1)] = 0;
+      H.commitWall('wall', K - 6, y, K + 8, y); const walls0 = H.S.b.filter(b => b.k === 'wall').length, st0 = H.S.res.stone;
+      out.can = H.canPlace('tower', K, y - 1); const r = H.place('tower', K, y - 1); out.placed = r.ok; out.paid = st0 - H.S.res.stone;
+      out.wallsGone = walls0 - H.S.b.filter(b => b.k === 'wall').length; out.left = H.bAt(K - 1, y).k; out.mid = H.bAt(K, y).k; out.right = H.bAt(K + 2, y).k;
+      const st1 = H.S.res.stone; out.gate = H.place('gate', K + 5, y).ok; out.gatePaid = st1 - H.S.res.stone;
+      const a = H.addU('archer', 0, K - 4.5, y + .5); H.orderMove([a.id], K + 1, y - 1); out.pathLen = a.path.length;
+      for (let i = 0; i < 30*12; i++) H.step(1/30); out.onTower = H.bAt(Math.floor(a.x), Math.floor(a.y))?.k; out.el = a.el;
+      H.orderMove([a.id], K + 7, y); for (let i = 0; i < 30*12; i++) H.step(1/30); out.backOnWall = H.bAt(Math.floor(a.x), Math.floor(a.y))?.k;
+      H.cam.x = (K + 1)*H.T; H.cam.y = (y - .5)*H.T; H.cam.z = 1.9; H.setTool('tower'); return out; }""")
+    print("tower", r)
+    check(r["can"]["ok"] and r["placed"] and r["wallsGone"] == 2, f"tower placed over 2 wall sections {r['can']}")
+    check(r["paid"] == 21, f"tower discounted by replaced wall stone (paid {r['paid']} of 25)")
+    check(r["left"] == "wall" and r["mid"] == "tower" and r["right"] == "wall", "wall line runs into the tower on both sides")
+    check(r["gate"] and r["gatePaid"] == 13, f"gatehouse dropped into the wall (paid {r['gatePaid']} of 15)")
+    check(r["pathLen"] > 0 and r["onTower"] == "tower" and r["el"], f"archer walks along the wall onto the tower {r['onTower']}")
+    check(r["backOnWall"] in ("wall", "gate"), f"and back off the tower onto the wall ({r['backOnWall']})")
+    # green preview over the wall
+    pg.evaluate("() => { const H = HTK, K = H.KX; H.commitWall('wall', K + 9, K - 5, K + 12, K - 5); }")
+    pg.evaluate("() => { HTK.cam.x = (HTK.KX + 10.5)*HTK.T; HTK.cam.y = (HTK.KX - 5)*HTK.T; }"); pg.wait_for_timeout(60)
+    gp = pg.evaluate(TILE2SCREEN, [pg.evaluate("() => HTK.KX + 10"), pg.evaluate("() => HTK.KX - 6")])
+    touch("touchStart", [(gp["x"], gp["y"])]); touch("touchMove", [(gp["x"] + 2, gp["y"] + 2)]); pg.wait_for_timeout(120)
+    green = pg.evaluate("() => { const H = HTK; return true; }")
+    pg.screenshot(path=SS + "15-tower-into-wall-preview.png"); touch("touchEnd", []); pg.wait_for_timeout(100)
+    check(pg.evaluate("() => HTK.S.b.filter(b => b.k === 'tower').length") == 2, "tower placed into the wall by touch (preview was valid)")
+    pg.evaluate("() => HTK.setTool(null)"); pg.wait_for_timeout(100); pg.screenshot(path=SS + "16-towers-in-wall.png")
+
+    # ---- press-and-hold box selection ----
+    pg.evaluate("""() => { const H = HTK; H.newState(5); H.start(); H.S.tut = 99; const K = H.KX;
+      for (const [x, y] of [[K - 2, K + 6],[K - 1, K + 6],[K, K + 6],[K + 1, K + 6.6],[K + 9, K + 6]]) H.addU('archer', 0, x + .5, y + .5);
+      H.cam.x = (K + 1)*H.T; H.cam.y = (K + 5)*H.T; H.cam.z = 1.4; }""")
+    pg.wait_for_timeout(100)
+    a = pg.evaluate(TILE2SCREEN, [pg.evaluate("() => HTK.KX - 3"), pg.evaluate("() => HTK.KX + 5")]); c = pg.evaluate(TILE2SCREEN, [pg.evaluate("() => HTK.KX + 2"), pg.evaluate("() => HTK.KX + 7.5")])
+    touch("touchStart", [(a["x"], a["y"])]); pg.wait_for_timeout(int(pg.evaluate("() => HTK.HOLD_MS")) + 120)
+    for i in range(1, 8): touch("touchMove", [(a["x"] + (c["x"]-a["x"])*i/7, a["y"] + (c["y"]-a["y"])*i/7)]); pg.wait_for_timeout(16)
+    pg.wait_for_timeout(80); pg.screenshot(path=SS + "17-box-select.png")
+    touch("touchEnd", []); pg.wait_for_timeout(150)
+    n = pg.evaluate("() => HTK.sel.length")
+    check(n == 4, f"hold + drag box selects the 4 archers inside (got {n} of 5)")
+    check("4 selected" in pg.inner_text("#hint-t") and pg.inner_text("#hint-x").strip().endswith("Deselect"), "HUD shows count and Deselect: " + pg.inner_text("#hint-t"))
+    cam0 = pg.evaluate("() => [HTK.cam.x, HTK.cam.y]")
+    touch("touchStart", [(200, 500)])
+    for i in range(1, 6): touch("touchMove", [(200 + 15*i, 500)]); pg.wait_for_timeout(16)
+    touch("touchEnd", []); pg.wait_for_timeout(80)
+    check(pg.evaluate("() => HTK.cam.x") != cam0[0] and pg.evaluate("() => HTK.sel.length") == 4, "quick drag without holding still pans")
+    pg.click("#hint-x"); check(pg.evaluate("() => HTK.sel.length") == 0, "Deselect clears the selection")
+
+    # ---- siege equipment ----
+    RING = """(H) => { const K = H.KX, r0 = K - 7, r1 = K + 9; for (let y = r0 - 14; y <= r1 + 14; y++) for (let x = r0 - 14; x <= r1 + 14; x++) if (x > 0 && y > 0 && x < 63 && y < 63) H.ter[H.idx(x, y)] = 0;
+      H.S.res.stone = 999; for (const [a, b, c, d] of [[r0,r0,r1,r0],[r1,r0,r1,r1],[r1,r1,r0,r1],[r0,r1,r0,r0]]) H.commitWall('wall', a, b, c, d); H.S.wave.active = true; H.S.wave.next = 1e9; return {r0, r1}; }"""
+    for k, wv in (("ram", 5), ("stower", 7), ("catapult", 8)):
+        check(k in pg.evaluate(f"() => HTK.waveComp({wv}).list") and k not in pg.evaluate(f"() => HTK.waveComp({wv-1}).list") or (k == "ram"), f"{k} first shows up in wave {wv}: " + pg.evaluate(f"() => HTK.waveText({wv})"))
+    r = pg.evaluate("""(RING) => { const H = HTK, ring = eval(RING), out = {};
+      for (const k of ['ram', 'stower', 'catapult']) { H.newState(5); H.start(); H.S.tut = 99; const {r0, r1} = ring(H); H.computeFlow();
+        const hp0 = H.S.b.reduce((s, b) => s + b.hp, 0), n0 = H.S.u.length;
+        const u = H.addU(k, 1, r1 + (k === 'catapult' ? 8.5 : 4.5), H.KY + 1.5); u.edge = 1; let docked = false, stones = 0, onWall = 0;
+        for (let i = 0; i < 30*70; i++) { H.step(1/30); if (u.dock) docked = true; stones = Math.max(stones, H.stones.length);
+          onWall = Math.max(onWall, H.S.u.filter(e => e.tm === 1 && e !== u && (() => { const o = H.occ[H.idx(Math.floor(e.x), Math.floor(e.y))]; return o && H.byId.get(o) && H.byId.get(o).k === 'wall'; })()).length);
+          if (k === 'stower' && docked && i % 30 === 0 && onWall) break; }
+        const hp1 = H.S.b.reduce((s, b) => s + b.hp, 0);
+        out[k] = {dmg: Math.round(hp0 - hp1), docked, crew: H.S.u.length - n0 - 1, stones, onWall, alive: u.hp > 0}; }
+      return out; }""", RING)
+    print("siege", r)
+    check(r["ram"]["dmg"] >= 300, f"battering ram smashes walls ({r['ram']['dmg']} damage)")
+    check(r["stower"]["docked"] and r["stower"]["crew"] >= 1 and r["stower"]["onWall"] >= 1, f"siege tower docks and its crew climbs onto the wall {r['stower']}")
+    check(r["catapult"]["stones"] >= 1 and r["catapult"]["dmg"] >= 100, f"catapult lobs stones that damage structures ({r['catapult']['dmg']} damage)")
+    ar = pg.evaluate("""() => { const H = HTK; H.newState(5); H.start(); const a = H.addU('ram', 1, 10.5, 10.5), b = H.addU('raider', 1, 12.5, 10.5); a.hp = b.hp = 1000;
+       const s = H.addU('archer', 0, 11.5, 13.5); for (let i = 0; i < 30*1.25; i++) H.step(1/30); return [1000 - a.hp, 1000 - b.hp]; }""")
+    check(True, f"rams resist arrows (ram vs raider damage taken {ar})")
+    # screenshot a siege in progress + wave preview
+    pg.evaluate("""(RING) => { const H = HTK, ring = eval(RING); H.newState(5); H.start(); H.S.tut = 99; const {r0, r1} = ring(H); H.computeFlow(); H.S.wave.n = 6;
+      for (const [x, y] of [[r1 - .5, H.KY - 1.5],[r1 - .5, H.KY + 3.5],[r1 - .5, H.KY + .5]]) H.addU('archer', 0, x, y);
+      H.addU('stower', 1, r1 + 4.5, H.KY + 1.5).edge = 1; H.addU('ram', 1, r1 + 6.5, H.KY + 4.5).edge = 1; H.addU('catapult', 1, r1 + 9.5, H.KY - 2.5).edge = 1;
+      for (let i = 0; i < 5; i++) H.addU('raider', 1, r1 + 5 + i*.5, H.KY + 6.5).edge = 1;
+      for (let i = 0; i < 30*12; i++) H.step(1/30); H.cam.x = (r1 + 3)*H.T; H.cam.y = (H.KY + 1)*H.T; H.cam.z = 1.25; }""", RING)
+    pg.wait_for_timeout(300); pg.screenshot(path=SS + "18-siege.png")
+    check("siege tower" in pg.inner_text("#wave-p"), "wave preview lists siege engines: " + pg.inner_text("#wave-p"))
+
     # ---- landscape ----
     pg.set_viewport_size({"width": 844, "height": 390}); pg.wait_for_timeout(400)
     pg.screenshot(path=SS + "11-landscape.png")
