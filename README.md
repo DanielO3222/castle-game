@@ -31,3 +31,26 @@ Open **🛠 Map Editor** on the start screen. You can:
 The editor checks that the keep is placed, that there is at least one spawn point, and that enemies can actually reach the keep.
 
 Start a game on your map with **Play Custom Map**.
+
+## Weapons economy (v1.4.0)
+Soldiers now need weapons, as in Stronghold. Every workshop needs a peasant and delivers to an **Armory**; its worker carries each finished weapon there.
+
+| Workshop | Makes | Uses |
+|---|---|---|
+| Fletcher | 🏹 bows | 3 wood |
+| Poleturner | 🔱 spears | 2 wood |
+| Blacksmith | 🗡 swords or 🔨 maces (switch in its panel) | 2 iron |
+| Armorer | 🛡 armor | 2 iron |
+
+Recruiting at the Barracks costs a weapon plus gold and one peasant:
+
+| Soldier | Cost |
+|---|---|
+| Archer | bow + 12🪙 |
+| Spearman | spear + 8🪙 |
+| Maceman | mace + 15🪙 |
+| Swordsman | sword + armor + 20🪙 |
+
+A new game starts with 4 bows and 4 spears. The ⚔ chip in the top bar shows your weapon total. Tap it for the breakdown.
+
+The **Market** buys and sells every good (wood, stone, iron, food and all five weapons), and the sell price is always lower than the buy price.

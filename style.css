@@ -124,3 +124,11 @@ textarea.ed-in{font:12px ui-monospace,monospace;word-break:break-all;resize:none
   #ed-bottom{left:auto;top:0;width:min(330px,46vw);padding-top:calc(var(--st) + 4px);border-top:0;border-left:3px solid #7a5a32;overflow-y:auto}
   #ed-tools{grid-template-columns:repeat(5,1fr)}#ed-tools button{min-height:40px}#ed-opts{margin-top:10px}
 }
+
+/* ---------- weapons / market ---------- */
+.r i{font-size:13px}#res{gap:2px}.r b{font-size:13px}
+.arms{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}.arms span{background:#0000000f;border:1px solid #c2a56c;border-radius:8px;padding:4px 7px;font-size:13px}
+.mkt{margin-top:6px}.mh,.mr{display:grid;grid-template-columns:1.6fr .7fr 1fr 1fr;gap:4px;align-items:center}
+.mh{font-size:11px;opacity:.7;padding:0 2px}.mr{padding:2px 0;border-top:1px solid #0000001a;font-size:13px}.mr b{text-align:center}
+.mr .sm{height:32px;font-size:13px;min-width:0;padding:0 4px}
+.mr .sm[data-a^=sell]{background:linear-gradient(#4f9a42,#2f6726);border-color:#7cc46c;color:#fff}

@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const T = 32, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -17,6 +17,11 @@ const B = {
   farm:      {name:'Apple Farm', w:3,h:3,hp:120, spr:'farm', sw:3.3, cost:{wood:15}, prod:'food', amt:8, work:9, desc:'Grows apples. Needs 1 peasant.'},
   hovel:     {name:'Hovel', w:2,h:2,hp:150, spr:'house', sw:2.0, cost:{wood:12}, house:6, desc:'Houses 6 more people. Peasants move in while you have food.'},
   market:    {name:'Market', w:2,h:2,hp:150, spr:null, cost:{wood:20}, desc:'Trade goods for gold, or gold for goods.'},
+  armory:    {name:'Armory', w:2,h:2,hp:300, spr:'armory', sw:2.2, cost:{wood:15}, drop:['bow','spear','mace','sword','armor'], sign:'🛡', desc:'Weapons and armor are stored here. Workshops need one to deliver to. Recruiting takes weapons from here.'},
+  fletcher:  {name:'Fletcher', w:2,h:2,hp:150, spr:'fletcher', sw:2.0, cost:{wood:20}, prod:'bow', inp:{wood:3}, amt:1, work:12, craft:1, sign:'🏹', desc:'Carves bows from 3 wood. Bows arm Archers. Needs 1 peasant and an Armory.'},
+  poleturner:{name:'Poleturner', w:2,h:2,hp:150, spr:'poleturner', sw:2.0, cost:{wood:15}, prod:'spear', inp:{wood:2}, amt:1, work:10, craft:1, sign:'🔱', desc:'Turns 2 wood into a spear. Spears arm Spearmen. Needs 1 peasant and an Armory.'},
+  blacksmith:{name:'Blacksmith', w:2,h:2,hp:200, spr:'blacksmith', sw:2.0, cost:{wood:20,stone:10}, prod:'sword', alt:'mace', inp:{iron:2}, amt:1, work:14, craft:1, sign:'⚒', desc:'Forges swords (or maces) from 2 iron. Tap it to switch. Needs 1 peasant and an Armory.'},
+  armorer:   {name:'Armorer', w:2,h:2,hp:200, spr:'armorer', sw:2.0, cost:{wood:20,stone:10}, prod:'armor', inp:{iron:2}, amt:1, work:14, craft:1, sign:'🛡', desc:'Hammers 2 iron into metal armor. Swordsmen need armor. Needs 1 peasant and an Armory.'},
   barracks:  {name:'Barracks', w:3,h:3,hp:500, spr:'barracks', sw:3.3, cost:{wood:30,stone:20}, desc:'Turn idle peasants into soldiers.'},
   tower:     {name:'Tower', w:2,h:2,hp:1000, spr:'tower', sw:2.0, cost:{stone:25}, walk:1, shoot:{r:7,d:12,cd:1.2}, desc:'A lookout tower with its own archer. Put more archers on it for extra range.'},
   wall:      {name:'Stone Wall', w:1,h:1,hp:500, cost:{stone:2}, line:1, walk:1, desc:'Strong wall. Archers standing on it get extra range and are safe from swords.'},
@@ -26,9 +31,10 @@ const B = {
 const PRODS = ['woodcutter','quarry','mine','farm'];
 const TREE_WOOD = 18, STUMP_CLEAR = 20;  // wood per tree tile; a felled tree leaves a stump that clears to grass after 20 s
 const UNIT = {
-  archer: {name:'Archer', hp:50, dmg:10, cd:1.2, spd:1.4, range:5.5, cost:{gold:15,wood:5}},
-  spear:  {name:'Spearman', hp:130, dmg:15, cd:1.0, spd:1.45, aggro:3.5, cost:{gold:10}},
-  sword:  {name:'Swordsman', hp:240, dmg:26, cd:1.1, spd:1.15, aggro:3.5, cost:{gold:20,iron:5}},
+  archer: {name:'Archer', hp:50, dmg:10, cd:1.2, spd:1.4, range:5.5, cost:{gold:12,bow:1}},
+  spear:  {name:'Spearman', hp:130, dmg:15, cd:1.0, spd:1.45, aggro:3.5, cost:{gold:8,spear:1}},
+  mace:   {name:'Maceman', hp:170, dmg:22, cd:.9, spd:1.6, aggro:4, cost:{gold:15,mace:1}},
+  sword:  {name:'Swordsman', hp:240, dmg:26, cd:1.1, spd:1.15, aggro:3.5, cost:{gold:20,sword:1,armor:1}},
   raider: {name:'Raider', hp:60, dmg:8, sdmg:8, cd:1.0, spd:1.1},
   earcher:{name:'Enemy Archer', hp:40, dmg:6, sdmg:4, cd:1.6, spd:1.0, range:5},
   brute:  {name:'Brute', hp:260, dmg:12, sdmg:40, cd:1.2, spd:0.65},
@@ -38,7 +44,13 @@ const UNIT = {
   catapult: {name:'Catapult', hp:220, dmg:0, sdmg:70, cd:4.5, spd:0.5, armor:1, siege:1, range:9},
 };
 const RES = ['wood','stone','iron','food','gold'];
-const ICON = {wood:'🪵', stone:'🪨', iron:'🔩', food:'🍎', gold:'🪙', pop:'👥'};
+const WEAP = ['bow','spear','mace','sword','armor'];
+const ICON = {wood:'🪵', stone:'🪨', iron:'🔩', food:'🍎', gold:'🪙', pop:'👥', bow:'🏹', spear:'🔱', mace:'🔨', sword:'🗡', armor:'🛡'};
+const GNAME = {wood:'wood', stone:'stone', iron:'iron', food:'food', gold:'gold', bow:'bows', spear:'spears', mace:'maces', sword:'swords', armor:'armor'};
+const START_WEAP = {bow:4, spear:4, mace:0, sword:0, armor:0};
+// market prices: raw goods per 10, weapons per 1 (you always sell for less than you buy)
+const TRADE = {lot:{wood:10, stone:10, iron:10, food:10, bow:1, spear:1, mace:1, sword:1, armor:1},
+  sell:{wood:5, stone:7, iron:12, food:5, bow:8, spear:5, mace:10, sword:14, armor:14}, buy:{wood:12, stone:16, iron:28, food:12, bow:20, spear:14, mace:26, sword:36, armor:36}};
 const costTxt = c => Object.entries(c).map(([k,v]) => v + ICON[k]).join(' ') || 'free';
 
 // ---------- assets ----------
@@ -48,7 +60,9 @@ function tinted(im, col, a) { const c = document.createElement('canvas'); c.widt
   g.globalCompositeOperation = 'source-atop'; g.globalAlpha = a; g.fillStyle = col; g.fillRect(0, 0, c.width, c.height); return c; }
 function loadAssets() {
   return Promise.all(SPR.map(n => new Promise(res => { const im = new Image(); im.onload = () => { IMG[n] = im; res(); }; im.onerror = res; im.src = 'assets/' + n + '.png'; })))
-    .then(() => { if (IMG.rock) IMG.iron = tinted(IMG.rock, '#b4441c', .5); if (IMG.quarry) IMG.mine = tinted(IMG.quarry, '#8a2e12', .35); });
+    .then(() => { if (IMG.rock) IMG.iron = tinted(IMG.rock, '#b4441c', .5); if (IMG.quarry) IMG.mine = tinted(IMG.quarry, '#8a2e12', .35);
+      if (IMG.house) { IMG.fletcher = tinted(IMG.house, '#3f7a34', .28); IMG.poleturner = tinted(IMG.house, '#b8862a', .28); IMG.blacksmith = tinted(IMG.house, '#2a2a30', .45); IMG.armorer = tinted(IMG.house, '#4a5a78', .4); }
+      if (IMG.granary) IMG.armory = tinted(IMG.granary, '#3a4250', .5); });
 }
 
 // ---------- rng / noise ----------
@@ -105,7 +119,7 @@ function genTerrain(seed, n = 64) {
 }
 
 function newState(seed) {
-  S = {v:1, ver:VERSION, seed, t:0, res:{wood:150, stone:80, iron:0, food:80, gold:60}, tw:{}, stumps:{}, pop:6, b:[], u:[], nid:1,
+  S = {v:1, ver:VERSION, seed, t:0, res:{wood:150, stone:80, iron:0, food:80, gold:60, ...START_WEAP}, tw:{}, stumps:{}, pop:6, b:[], u:[], nid:1,
        wave:{n:0, next:240, active:false}, kills:0, over:false, tut:0, starveT:0, popT:0};
   genTerrain(seed);
   addB('keep', KX, KY); addB('stockpile', KX+4, KY+1); addB('granary', KX-3, KY+1);
@@ -117,7 +131,7 @@ function rleDecode(str, n) { const a = new Uint8Array(n*n); let p = 0; for (cons
 function nearSpot(k, cx, cy) { let best = null, bd = 1e9; for (let y = cy - 8; y <= cy + 8; y++) for (let x = cx - 8; x <= cx + 8; x++) { const c = canPlace(k, x, y); if (!(c.ok || c.poor)) continue; const d = Math.hypot(x - cx, y - cy); if (d < bd) { bd = d; best = {x, y}; } } return best; }
 function newStateFromMap(m) {
   const st = m.settings || {};
-  S = {v:1, ver:VERSION, seed:0, t:0, res:{wood:150, stone:80, iron:0, food:80, gold:60, ...(st.res || {})}, tw:{}, stumps:{}, pop:st.pop ?? 6, b:[], u:[], nid:1,
+  S = {v:1, ver:VERSION, seed:0, t:0, res:{wood:150, stone:80, iron:0, food:80, gold:60, ...START_WEAP, ...(st.res || {})}, tw:{}, stumps:{}, pop:st.pop ?? 6, b:[], u:[], nid:1,
        wave:{n:0, next:(st.first ?? DEFAULT_CFG.first), active:false}, kills:0, over:false, tut:0, starveT:0, popT:0,
        cfg:{...DEFAULT_CFG, ...st, res:undefined, pop:undefined}, custom:{name:m.name, id:m.id, size:m.size, ter:m.ter, keep:m.keep, spawns:m.spawns}};
   loadCustomTerrain(S.custom);
@@ -147,7 +161,7 @@ const idle = () => S.pop - employed();
 const afford = c => Object.entries(c).every(([k,v]) => S.res[k] >= v);
 const pay = c => { for (const [k,v] of Object.entries(c)) S.res[k] -= v; };
 const refund = (c, f) => { for (const [k,v] of Object.entries(c)) S.res[k] += Math.floor(v*f); };
-function flashRes(c) { for (const k of Object.keys(c)) if (S.res[k] < c[k]) { const e = $('r-'+k); e.classList.remove('flash'); void e.offsetWidth; e.classList.add('flash'); } }
+function flashRes(c) { for (const k of Object.keys(c)) if ((S.res[k] || 0) < c[k]) { const e = $(WEAP.includes(k) ? 'r-arms' : 'r-'+k); if (!e) continue; e.classList.remove('flash'); void e.offsetWidth; e.classList.add('flash'); } }
 
 // ---------- placement ----------
 function canPlace(k, x, y) {
@@ -286,7 +300,8 @@ function recruit(k) {
   const br = S.b.find(b => b.k === 'barracks');
   if (!br) return {ok:false, why:'Build a Barracks first (Military tab)'};
   if (idle() < 1) return {ok:false, why:'No idle peasants. Build a Hovel or free up workers', pop:true};
-  if (!afford(UNIT[k].cost)) return {ok:false, why:'Not enough ' + Object.keys(UNIT[k].cost).filter(r => S.res[r] < UNIT[k].cost[r]).join(' & '), poor:true, cost:UNIT[k].cost};
+  if (!afford(UNIT[k].cost)) { const miss = Object.keys(UNIT[k].cost).filter(r => S.res[r] < UNIT[k].cost[r]), w = miss.filter(r => WEAP.includes(r));
+    return {ok:false, why: w.length ? 'No ' + w.map(r => ICON[r] + ' ' + GNAME[r]).join(' or ') + ' in the Armory. Make them in a workshop or buy them at the Market' : 'Not enough ' + miss.join(' & '), poor:true, cost:UNIT[k].cost}; }
   pay(UNIT[k].cost); S.pop--;
   const u = addU(k, 0, br.x + 1.5, br.y + 3.4); u.px = u.x; u.py = u.y;
   puff(u.x*T, u.y*T, '#e7d9b0', 6); return {ok:true, u};
@@ -441,7 +456,8 @@ function sendWave() { if (S.over) return; S.wave.next = S.t; }
 // ---------- simulation ----------
 function dropFor(res, fromX, fromY) {
   let best = null, bd = Infinity;
-  for (const b of S.b) { const d = B[b.k]; if (b.k !== 'keep' && !(d.drop && d.drop.includes(res))) continue; const dist = Math.hypot(b.x + d.w/2 - fromX, b.y + d.h - fromY) + (b.k === 'keep' ? 4 : 0); if (dist < bd) { bd = dist; best = b; } }
+  const weap = WEAP.includes(res);
+  for (const b of S.b) { const d = B[b.k]; if ((b.k !== 'keep' || weap) && !(d.drop && d.drop.includes(res))) continue; const dist = Math.hypot(b.x + d.w/2 - fromX, b.y + d.h - fromY) + (b.k === 'keep' ? 4 : 0); if (dist < bd) { bd = dist; best = b; } }
   return best;
 }
 function stepEconomy(dt) {
@@ -461,11 +477,16 @@ function stepEconomy(dt) {
     let w = workers.get(b.id); const door = {x: b.x + d.w/2, y: b.y + d.h + .3};
     if (!w) { w = {st:0, t:Math.random()*2, x:door.x, y:door.y, an:0}; workers.set(b.id, w); }
     if (d.chop && w.st !== 1 && w.st !== 2) { stepChopper(b, d, w, door, dt); return; }
+    if (d.craft && w.st === 0) { const out = b.out || d.prod;
+      if (!w.has) { b.need = !dropFor(out, door.x, door.y) ? 'armory' : !afford(d.inp) ? Object.keys(d.inp).find(r => S.res[r] < d.inp[r]) : null;
+        w.x = door.x; w.y = door.y; w.sw = 0; if (b.need) return; pay(d.inp); w.has = 1; w.t = 0; }
+      b.need = null; w.t += dt; w.x = door.x - .4; w.y = door.y - .15; w.sw = (w.t % .7)/.7; const imp = Math.floor(w.t/.7); if (imp !== w.imp) { w.imp = imp; if (imp % 2 === 0 && particles.length < 250) puff(w.x*T + 9, w.y*T - 2, out === 'bow' || out === 'spear' ? '#b89868' : '#9a8a78', 1); }
+      if (w.t >= d.work) { const dp = dropFor(out, door.x, door.y); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.what = out; w.has = 0; w.sw = 0; } return; }
     if (d.mine && w.st === 0) { w.t += dt; w.x = door.x - .4; w.y = door.y - .15; w.sw = (w.t % .8)/.8; const imp = Math.floor(w.t/.8); if (imp !== w.imp) { w.imp = imp; if (particles.length < 250) puff(w.x*T + 9, w.y*T - 4, d.on === 5 ? '#a8502c' : '#a8a49a', 2); }
       if (w.t >= d.work) { const dp = dropFor(d.prod, door.x, door.y); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.sw = 0; } return; }
     if (w.st === 0) { w.t += dt; w.x = door.x + Math.sin(S.t*2 + b.id)*.3; w.y = door.y; if (w.t >= d.work) { const dp = dropFor(d.prod, door.x, door.y); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; } }
     else if (w.st === 1) { const dp = byId.get(w.to); if (!dp) { w.st = 0; w.t = 0; return; } const tx = dp.x + B[dp.k].w/2, ty = dp.y + B[dp.k].h + .2; w.an += dt*8;
-      if (walkLeg(w, tx, ty, dt)) { S.res[d.prod] += w.carry; w.carry = 0; w.st = 2; floatTxt(tx*T, ty*T - 20, '+' + d.amt + ICON[d.prod]); } }
+      if (walkLeg(w, tx, ty, dt)) { const g = w.what || d.prod; S.res[g] = (S.res[g] || 0) + w.carry; w.carry = 0; w.st = 2; w.what = null; floatTxt(tx*T, ty*T - 20, '+' + d.amt + ICON[g]); } }
     else { if (walkLeg(w, door.x, door.y, dt)) { w.st = 0; w.t = 0; } }
   });
 }
@@ -641,6 +662,8 @@ function drawBuildingSprite(c, k, x, y, alpha) {
   c.globalAlpha = alpha ?? 1;
   if (k === 'market') drawMarket(c, cx, by, d.w*T*1.05);
   else { const im = IMG[d.spr]; if (im) { const w = d.sw*T, h = w*im.height/im.width; c.drawImage(im, cx - w/2, by - h, w, h); } else { c.fillStyle = '#8a6a3a'; c.fillRect(x*T, y*T, d.w*T, d.h*T); } }
+  if (d.sign) { const sx = cx + d.w*T*.32, sy = by - d.h*T*.42; c.strokeStyle = '#3a2a18'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(sx - 9, sy - 13); c.lineTo(sx + 9, sy - 13); c.stroke();
+    c.fillStyle = '#e8d4a0'; c.strokeStyle = '#5a3e22'; c.lineWidth = 1.5; c.beginPath(); c.rect(sx - 9, sy - 11, 18, 15); c.fill(); c.stroke(); c.font = '11px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = '#000'; c.fillText(d.sign, sx, sy - 3.5); c.textBaseline = 'alphabetic'; }
   c.globalAlpha = 1;
 }
 function drawFigure(c, x, y, k, tm, an, fx, atk, carry, tool, swing) {
@@ -656,16 +679,27 @@ function drawFigure(c, x, y, k, tm, an, fx, atk, carry, tool, swing) {
   const sw = atk ? -0.7 : 0;
   if (tool) { const a = swing < .6 ? -2.2 + swing/.6*.6 : -1.6 + Math.min(1, (swing - .6)/.15)*2.5; c.save(); c.translate(2, -11); c.rotate(a);   // wind up, then strike
     c.strokeStyle = '#7a5230'; c.lineWidth = 1.8; c.beginPath(); c.moveTo(0, 0); c.lineTo(11, 0); c.stroke();
-    if (tool === 'axe') { c.fillStyle = '#c8ccd2'; c.beginPath(); c.moveTo(9, -1); c.lineTo(13, -4.5); c.lineTo(13.5, 3); c.lineTo(9, 1.2); c.fill(); }
+    if (tool === 'hammer') { c.fillStyle = '#5a5a60'; c.fillRect(9, -3, 5, 6); }
+    else if (tool === 'knife') { c.fillStyle = '#d8dce2'; c.beginPath(); c.moveTo(9, -1.2); c.lineTo(15, 0); c.lineTo(9, 1.2); c.fill(); }
+    else if (tool === 'axe') { c.fillStyle = '#c8ccd2'; c.beginPath(); c.moveTo(9, -1); c.lineTo(13, -4.5); c.lineTo(13.5, 3); c.lineTo(9, 1.2); c.fill(); }
     else { c.strokeStyle = '#9aa0a8'; c.lineWidth = 2; c.beginPath(); c.moveTo(11, -5); c.quadraticCurveTo(13.5, 0, 11, 5); c.stroke(); }
     c.restore(); }
   if (k === 'sword') { c.save(); c.translate(5, -8); c.rotate(sw*1.2 + .1); c.strokeStyle = '#dfe4ea'; c.lineWidth = 2; c.beginPath(); c.moveTo(0, 2); c.lineTo(0, -13); c.stroke(); c.strokeStyle = '#8a6a28'; c.lineWidth = 1.6; c.beginPath(); c.moveTo(-3, 2); c.lineTo(3, 2); c.stroke(); c.restore();
     c.fillStyle = '#6a7078'; c.strokeStyle = '#e7b84a'; c.lineWidth = 1; c.beginPath(); c.moveTo(-8.5, -12); c.lineTo(-1.5, -12); c.lineTo(-1.5, -6); c.lineTo(-5, -2.5); c.lineTo(-8.5, -6); c.closePath(); c.fill(); c.stroke(); }
+  if (k === 'mace') { c.save(); c.translate(5, -8); c.rotate(sw*1.3 + .2); c.strokeStyle = '#6a4a28'; c.lineWidth = 1.8; c.beginPath(); c.moveTo(0, 3); c.lineTo(0, -9); c.stroke(); c.fillStyle = '#5a5a62'; c.beginPath(); c.arc(0, -10.5, 3.2, 0, 7); c.fill();
+    c.fillStyle = '#9aa0a8'; for (let q = 0; q < 6; q++) { const a = q*Math.PI/3; c.fillRect(Math.cos(a)*3.6 - .8, -10.5 + Math.sin(a)*3.6 - .8, 1.6, 1.6); } c.restore(); }
   if (k === 'spear' || k === 'raider') { c.save(); c.translate(5, -8); c.rotate(sw + .15); c.strokeStyle = '#6a4a28'; c.lineWidth = 1.6; c.beginPath(); c.moveTo(0, 6); c.lineTo(0, -16); c.stroke(); c.fillStyle = '#ccd'; c.beginPath(); c.moveTo(-2, -15); c.lineTo(2, -15); c.lineTo(0, -21); c.fill(); c.restore();
     if (k === 'spear') { c.fillStyle = '#2f5fa8'; c.strokeStyle = '#e7b84a'; c.lineWidth = 1; c.beginPath(); c.arc(-4.5, -9, 3.6, 0, 7); c.fill(); c.stroke(); } }
   if (k === 'archer' || k === 'earcher') { c.strokeStyle = '#6a4a28'; c.lineWidth = 1.5; c.beginPath(); c.arc(4, -10, 6, -1.2, 1.2); c.stroke(); c.strokeStyle = '#ddd'; c.lineWidth = .6; c.beginPath(); c.moveTo(4 + 6*Math.cos(-1.2), -10 + 6*Math.sin(-1.2)); c.lineTo(4 + 6*Math.cos(1.2), -10 + 6*Math.sin(1.2)); c.stroke(); }
   if (k === 'brute') { c.save(); c.translate(5, -9); c.rotate(sw*1.4); c.strokeStyle = '#4a3020'; c.lineWidth = 2.4; c.beginPath(); c.moveTo(0, 4); c.lineTo(0, -10); c.stroke(); c.fillStyle = '#555'; c.fillRect(-3.5, -14, 7, 6); c.restore(); }
-  if (carry) { c.fillStyle = carry === 'wood' ? '#8a5a2a' : carry === 'stone' ? '#9a968c' : '#c8342a'; c.beginPath(); c.arc(-4, -14, 3.6, 0, 7); c.fill(); }
+  if (carry && WEAP.includes(carry)) { c.save(); c.translate(-5, -15); c.rotate(-.35);
+    if (carry === 'bow') { c.strokeStyle = '#6a4a28'; c.lineWidth = 1.6; c.beginPath(); c.arc(0, 0, 5, -1.3, 1.3); c.stroke(); }
+    else if (carry === 'spear') { c.strokeStyle = '#7a5230'; c.lineWidth = 1.4; c.beginPath(); c.moveTo(-1, 7); c.lineTo(-1, -9); c.stroke(); c.fillStyle = '#ccd'; c.beginPath(); c.moveTo(-3, -8); c.lineTo(1, -8); c.lineTo(-1, -13); c.fill(); }
+    else if (carry === 'sword') { c.strokeStyle = '#e0e4ea'; c.lineWidth = 1.8; c.beginPath(); c.moveTo(0, 5); c.lineTo(0, -8); c.stroke(); c.strokeStyle = '#8a6a28'; c.beginPath(); c.moveTo(-3, 4); c.lineTo(3, 4); c.stroke(); }
+    else if (carry === 'mace') { c.strokeStyle = '#6a4a28'; c.lineWidth = 1.6; c.beginPath(); c.moveTo(0, 6); c.lineTo(0, -5); c.stroke(); c.fillStyle = '#6a6a72'; c.beginPath(); c.arc(0, -6, 3, 0, 7); c.fill(); }
+    else { c.fillStyle = '#9aa4b0'; c.strokeStyle = '#4a5260'; c.lineWidth = 1; c.beginPath(); c.moveTo(-4, -5); c.lineTo(4, -5); c.lineTo(3.4, 4); c.lineTo(-3.4, 4); c.closePath(); c.fill(); c.stroke(); }
+    c.restore(); }
+  else if (carry) { c.fillStyle = carry === 'wood' ? '#8a5a2a' : carry === 'stone' ? '#9a968c' : '#c8342a'; c.beginPath(); c.arc(-4, -14, 3.6, 0, 7); c.fill(); }
   c.restore();
 }
 function drawSiege(c, x, y, u) {
@@ -778,7 +812,7 @@ function toast(msg, cls = '', ms = 2600) {
   const box = $('toasts'); while (box.children.length > 1) box.firstChild.remove();
   const el = document.createElement('div'); el.className = 'toast ' + cls; el.textContent = msg; box.appendChild(el); setTimeout(() => el.remove(), ms);
 }
-const TABS = {eco:['woodcutter','quarry','mine','farm','hovel','stockpile','granary','market'], castle:['wall','palisade','tower','gate','demolish'], mil:['barracks','r:archer','r:spear','r:sword']};
+const TABS = {eco:['woodcutter','quarry','mine','farm','hovel','stockpile','granary','market'], castle:['wall','palisade','tower','gate','demolish'], mil:['barracks','armory','fletcher','poleturner','blacksmith','armorer','r:archer','r:spear','r:mace','r:sword']};
 let curTab = 'eco';
 const iconCache = {};
 function iconFor(k) {
@@ -843,13 +877,15 @@ function renderSheet(force) {
   const sh = $('sheet'); const b = selB && byId.get(selB);
   if (!b) { if (selB) selB = null; sh.classList.add('hidden'); $('build').classList.remove('hidden'); sheetKey = ''; return; }
   const d = B[b.k]; let html = `<button class="x" data-a="close">✕</button><h3>${d.name}</h3><div class="hpbar"><i style="width:${Math.max(0, b.hp/d.hp*100).toFixed(0)}%"></i></div><p>${d.desc}</p>`;
-  if (d.prod) html += `<p>${!b.staffed ? '💤 <b>No worker</b>. Needs an idle peasant (build Hovels)' : b.noTrees ? '🪓 <b>No trees left in range.</b> Build a new Woodcutter by a forest.' : '👷 Working: +' + d.amt + ICON[d.prod] + ' per trip'}</p>`;
+  if (d.craft) { const out = b.out || d.prod; html += `<p>${!b.staffed ? '💤 <b>No worker</b>. Needs an idle peasant (build Hovels)' : b.need === 'armory' ? '🛡 <b>No Armory</b> to deliver to. Build one (Military tab)' : b.need ? '⏳ Waiting for ' + costTxt(d.inp) + ' (not enough ' + b.need + ')' : '🔨 Making ' + ICON[out] + ' ' + GNAME[out] + ' from ' + costTxt(d.inp)}</p><p>In the Armory: ${ICON[out]} ${S.res[out] || 0}</p>`;
+    if (d.alt) html += `<div class="row"><button class="btn ${out === d.prod ? 'green' : ''}" data-a="out:${d.prod}">Make swords 🗡</button><button class="btn ${out === d.alt ? 'green' : ''}" data-a="out:${d.alt}">Make maces 🔨</button></div>`; }
+  else if (d.prod) html += `<p>${!b.staffed ? '💤 <b>No worker</b>. Needs an idle peasant (build Hovels)' : b.noTrees ? '🪓 <b>No trees left in range.</b> Build a new Woodcutter by a forest.' : '👷 Working: +' + d.amt + ICON[d.prod] + ' per trip'}</p>`;
   if (d.chop) { let n = 0; const R = d.nearR; for (let y = b.y - R; y < b.y + d.h + R; y++) for (let x = b.x - R; x < b.x + d.w + R; x++) if (inb(x, y) && ter[idx(x, y)] === 1) n++; html += `<p>🌲 ${n} trees in reach</p>`; }
+  if (b.k === 'armory' || b.k === 'barracks') html += `<div class="arms">${WEAP.map(r => `<span>${ICON[r]} <b>${S.res[r] || 0}</b> ${GNAME[r]}</span>`).join('')}</div>`;
   if (d.house) html += `<p>🏠 Houses ${d.house} · People ${S.pop + soldiers().length}/${cap()}</p>`;
   const rows = [];
-  if (b.k === 'barracks') rows.push(`<button class="btn" data-a="r:archer">Recruit Archer<small>${costTxt(UNIT.archer.cost)} 1👥</small></button><button class="btn" data-a="r:spear">Recruit Spearman<small>${costTxt(UNIT.spear.cost)} 1👥</small></button><button class="btn" data-a="r:sword">Recruit Swordsman<small>${costTxt(UNIT.sword.cost)} 1👥</small></button>`);
-  if (b.k === 'market') rows.push(`<button class="btn" data-a="sell:wood">Sell 10🪵<small>+5🪙</small></button><button class="btn" data-a="sell:stone">Sell 10🪨<small>+7🪙</small></button><button class="btn" data-a="sell:food">Sell 10🍎<small>+5🪙</small></button><button class="btn" data-a="sell:iron">Sell 10🔩<small>+12🪙</small></button>`,
-    `<button class="btn" data-a="buy:wood">Buy 10🪵<small>-12🪙</small></button><button class="btn" data-a="buy:stone">Buy 10🪨<small>-16🪙</small></button><button class="btn" data-a="buy:food">Buy 10🍎<small>-12🪙</small></button><button class="btn" data-a="buy:iron">Buy 10🔩<small>-28🪙</small></button>`);
+  if (b.k === 'barracks') rows.push(`<button class="btn" data-a="r:archer">Recruit Archer<small>${costTxt(UNIT.archer.cost)} 1👥</small></button><button class="btn" data-a="r:spear">Recruit Spearman<small>${costTxt(UNIT.spear.cost)} 1👥</small></button><button class="btn" data-a="r:mace">Recruit Maceman<small>${costTxt(UNIT.mace.cost)} 1👥</small></button><button class="btn" data-a="r:sword">Recruit Swordsman<small>${costTxt(UNIT.sword.cost)} 1👥</small></button>`);
+  if (b.k === 'market') html += `<div class="mkt"><div class="mh"><span>Good</span><span>Have</span><span>Buy</span><span>Sell</span></div>${[...RES.filter(r => r !== 'gold'), ...WEAP].map(r => `<div class="mr"><span>${ICON[r]} ${GNAME[r]}${TRADE.lot[r] > 1 ? ' ×' + TRADE.lot[r] : ''}</span><b>${fmt(S.res[r] || 0)}</b><button class="sm" data-a="buy:${r}">−${TRADE.buy[r]}🪙</button><button class="sm" data-a="sell:${r}">+${TRADE.sell[r]}🪙</button></div>`).join('')}</div>`;
   if (b.k === 'keep') { const dmg = S.b.filter(x => x.hp < B[x.k].hp && x.k !== 'keep'); rows.push(`<button class="btn" data-a="repairall" ${dmg.length ? '' : 'disabled'}>Repair everything<small>${dmg.length} damaged</small></button>`); }
   const row2 = [];
   if (b.hp < d.hp) row2.push(`<button class="btn" data-a="repair">Repair<small>${costTxt(repairCost(b))}</small></button>`);
@@ -858,19 +894,21 @@ function renderSheet(force) {
   if (force || html !== sheetKey) { sh.innerHTML = html; sheetKey = html; }
   sh.classList.remove('hidden'); $('build').classList.add('hidden');
 }
-const TRADE = {sell:{wood:5, stone:7, food:5, iron:12}, buy:{wood:12, stone:16, food:12, iron:28}};
 $('sheet').addEventListener('click', e => {
   const a = e.target.closest('[data-a]')?.dataset.a; if (!a) return; const b = byId.get(selB);
   if (a === 'close') { selB = null; renderSheet(); updateHint(); return; }
   if (!b) return;
   if (a.startsWith('r:')) { const r = recruit(a.slice(2)); toast(r.ok ? UNIT[a.slice(2)].name + ' recruited' : r.why, r.ok ? '' : 'bad'); if (r.cost && !r.ok) flashRes(r.cost); tutCheck(); }
-  else if (a.startsWith('sell:')) { const k = a.slice(5); if (S.res[k] >= 10) { S.res[k] -= 10; S.res.gold += TRADE.sell[k]; } else { toast('Not enough ' + k, 'bad'); flashRes({[k]:10}); } }
-  else if (a.startsWith('buy:')) { const k = a.slice(4); if (S.res.gold >= TRADE.buy[k]) { S.res.gold -= TRADE.buy[k]; S.res[k] += 10; } else { toast('Not enough gold', 'bad'); flashRes({gold:TRADE.buy[k]}); } }
+  else if (a.startsWith('sell:') || a.startsWith('buy:')) { const r = trade(a.split(':')[0], a.split(':')[1]); if (!r.ok) { toast(r.why, 'bad'); flashRes(r.cost); } }
+  else if (a.startsWith('out:')) { b.out = a.slice(4) === B[b.k].prod ? undefined : a.slice(4); toast('Now making ' + GNAME[a.slice(4)]); }
   else if (a === 'repair') { const c = repairCost(b); if (afford(c)) { pay(c); b.hp = B[b.k].hp; puff((b.x + B[b.k].w/2)*T, (b.y + B[b.k].h)*T, '#e7d9b0', 6); } else { toast('Not enough to repair', 'bad'); flashRes(c); } }
   else if (a === 'repairall') { let n = 0, poor = false; for (const x of S.b) if (x.hp < B[x.k].hp && x.k !== 'keep') { const c = repairCost(x); if (afford(c)) { pay(c); x.hp = B[x.k].hp; n++; } else poor = true; } toast(n ? 'Repaired ' + n + (poor ? ' (ran out of materials)' : '') : 'Not enough materials', n ? '' : 'bad'); }
   else if (a === 'demo') { demolish(b, .5); selB = null; updateHint(); }
   renderSheet(true); refreshItems();
 });
+function trade(kind, r) { const lot = TRADE.lot[r]; if (!lot) return {ok:false, why:'Can\'t trade that', cost:{}};
+  if (kind === 'sell') { if ((S.res[r] || 0) < lot) return {ok:false, why:'Not enough ' + GNAME[r] + ' to sell', cost:{[r]:lot}}; S.res[r] -= lot; S.res.gold += TRADE.sell[r]; return {ok:true}; }
+  if (S.res.gold < TRADE.buy[r]) return {ok:false, why:'Not enough gold', cost:{gold:TRADE.buy[r]}}; S.res.gold -= TRADE.buy[r]; S.res[r] = (S.res[r] || 0) + lot; return {ok:true}; }
 let undo = null;
 function offerUndo(ids, cost) { undo = {ids, cost, until: performance.now() + 6000}; $('btn-undo').classList.remove('hidden'); }
 function hideUndoSoon() {}
@@ -909,6 +947,7 @@ const fmt = n => n >= 10000 ? (n/1000).toFixed(0) + 'k' : String(Math.floor(n));
 let hudT = 0;
 function updateHud() {
   for (const r of RES) $('r-' + r).lastChild.textContent = fmt(S.res[r]);
+  $('r-arms').lastChild.textContent = WEAP.reduce((a, r) => a + (S.res[r] || 0), 0);
   $('r-pop').querySelector('b').textContent = `${S.pop + soldiers().length}/${cap()}`; $('r-pop').querySelector('sup').textContent = idle() + ' idle';
   const en = S.u.filter(u => u.tm === 1).length;
   const wv = $('wave');
@@ -945,8 +984,8 @@ function render(now) {
   for (const b of S.b) { const d = B[b.k]; if (!vis(b.x, b.y) && !vis(b.x + d.w, b.y + d.h)) continue;
     if (d.line || d.gate) dl.push({y:(b.y + 1)*T - 1, f:() => drawWall(c, b.x, b.y, b.k, b.hp/d.hp, b.rise != null ? b.rise : 1, conn)});
     else dl.push({y:(b.y + d.h)*T, f:() => { if (b.k === 'tower') for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) drawWall(c, b.x + i, b.y + j, 'wall', b.hp/d.hp, 1, conn);
-      drawBuildingSprite(c, b.k, b.x, b.y); if (d.prod && (!b.staffed || b.noTrees)) statusBubble(c, (b.x + d.w/2)*T, b.y*T - 4, !b.staffed ? '💤' : '🌲', b.staffed && b.noTrees); }}); }
-  for (const [id, w] of workers) { const b = byId.get(id); if (!b) continue; dl.push({y:w.y*T, f:() => drawFigure(c, w.x*T, w.y*T, 'peasant', 0, w.st === 4 || (B[b.k].mine && w.st === 0) ? 0 : w.an, w.st === 2 ? -1 : 1, 0, w.st === 1 ? B[b.k].prod : null, w.st === 4 ? 'axe' : B[b.k].mine && w.st === 0 ? 'pick' : null, w.sw || 0)}); }
+      drawBuildingSprite(c, b.k, b.x, b.y); if (d.prod && (!b.staffed || b.noTrees || b.need)) statusBubble(c, (b.x + d.w/2)*T, b.y*T - 4, !b.staffed ? '💤' : b.noTrees ? '🌲' : b.need === 'armory' ? '🛡' : ICON[b.need], b.staffed); }}); }
+  for (const [id, w] of workers) { const b = byId.get(id); if (!b) continue; dl.push({y:w.y*T, f:() => drawFigure(c, w.x*T, w.y*T, 'peasant', 0, w.st === 4 || ((B[b.k].mine || B[b.k].craft) && w.st === 0) ? 0 : w.an, w.st === 2 ? -1 : 1, 0, w.st === 1 ? (w.what || B[b.k].prod) : null, w.st === 4 ? 'axe' : B[b.k].mine && w.st === 0 ? 'pick' : B[b.k].craft && w.st === 0 && w.has ? (B[b.k].inp.wood ? 'knife' : 'hammer') : null, w.sw || 0)}); }
   // idle peasants by the keep
   const nIdle = Math.min(idle(), 10);
   for (let i = 0; i < nIdle; i++) { const a = i/Math.max(1, nIdle)*Math.PI + .2, px = (KX + 1.5 + Math.cos(a)*1.6)*T, py = (KY + 4.3 + Math.sin(a)*.8)*T; dl.push({y:py, f:() => drawFigure(c, px, py, 'peasant', 0, 0, Math.cos(a) > 0 ? -1 : 1)}); }
@@ -1046,13 +1085,13 @@ function frame(now) {
 
 // ---------- save / load ----------
 let memSave = null;
-function serialize() { return JSON.stringify({...S, b:S.b.map(({id,k,x,y,hp}) => ({id,k,x,y,hp})), u:S.u.map(({id,k,tm,x,y,hp,mhp,px,py,edge}) => ({id,k,tm,x,y,hp,mhp,px,py,edge}))}); }
+function serialize() { return JSON.stringify({...S, b:S.b.map(({id,k,x,y,hp,out}) => ({id,k,x,y,hp,out})), u:S.u.map(({id,k,tm,x,y,hp,mhp,px,py,edge}) => ({id,k,tm,x,y,hp,mhp,px,py,edge}))}); }
 function save() { if (!S || S.over) return; const s = serialize(); memSave = s; try { localStorage.setItem(SAVE_KEY, s); } catch (e) {} }
 function loadSaved() { let s = memSave; try { s = localStorage.getItem(SAVE_KEY) || s; } catch (e) {} if (!s) return null; try { const o = JSON.parse(s); return o && o.v === 1 ? o : null; } catch (e) { return null; } }
 function clearSave() { memSave = null; try { localStorage.removeItem(SAVE_KEY); } catch (e) {} }
 function restore(o) {
   S = o; if (S.custom) loadCustomTerrain(S.custom); else genTerrain(S.seed); for (const i of S.cleared || []) ter[i] = 0;
-  S.res.iron = S.res.iron || 0; S.tw = S.tw || {}; S.stumps = S.stumps || {}; for (const k in S.stumps) ter[+k] = 4;
+  S.res.iron = S.res.iron || 0; for (const r of WEAP) if (S.res[r] == null) S.res[r] = START_WEAP[r]; S.tw = S.tw || {}; S.stumps = S.stumps || {}; for (const k in S.stumps) ter[+k] = 4;
   for (const b of S.b) { const d = B[b.k]; if (!d || d.on) continue; for (let j = 0; j < d.h; j++) for (let i = 0; i < d.w; i++) { const q = idx(b.x+i, b.y+j); if (ter[q] === 2 || ter[q] === 5) ter[q] = 0; } } for (const b of S.b) b.cd = 0;
   for (const u of S.u) { u.path = []; u.cd = 0; u.an = 0; u.jx = (Math.random()-.5)*.45; u.jy = (Math.random()-.5)*.45; }
   reocc(); workers.clear(); projectiles = []; particles = [];
@@ -1065,6 +1104,7 @@ let running = false;
 const HOW = `<div class="how"><div>🪓 Build a <b>Woodcutter</b> by the forest, a <b>Quarry</b> on gray rocks, an <b>Iron Mine</b> on rusty red rocks, and <b>Farms</b> for food.</div>
 <div>🏠 <b>Hovels</b> bring more peasants. Every building needs an idle worker.</div>
 <div>🧱 Pick <b>Stone Wall</b> and <b>drag your finger</b>. It snaps to a straight line and shows the stone cost (red = not enough).</div>
+<div>⚒ Soldiers need weapons: a <b>Fletcher</b> makes bows, a <b>Poleturner</b> spears, a <b>Blacksmith</b> swords or maces, an <b>Armorer</b> armor. They deliver to the <b>Armory</b>. Or trade at the <b>Market</b>.</div>
 <div>🏹 Recruit <b>Archers</b> and <b>Spearmen</b> at the Barracks. Tap <b>⚔ Army</b>, then tap a wall to station them.</div>
 <div>⚔ Enemy waves come from the map edges. Walls block them. If the <b>Keep</b> falls, you lose.</div>
 <div>✋ One finger pans, two fingers zoom. <b>Press and hold, then drag</b> to box-select soldiers. ✕ Cancel leaves build mode.</div></div>`;
@@ -1114,6 +1154,7 @@ function start() {
 
 function startCustom(m) { clearSave(); newStateFromMap(m); start(); }
 function stopGame() { running = false; }
+$('r-arms').addEventListener('click', () => { if (S) toast('Armory: ' + WEAP.map(r => ICON[r] + ' ' + (S.res[r] || 0)).join('  '), '', 3500); });
 // ---------- boot ----------
 addEventListener('resize', resize); resize();
 const fitFabs = () => { const h = innerHeight - $('bottom').getBoundingClientRect().top; const land = matchMedia('(orientation:landscape) and (max-height:520px)').matches;
@@ -1129,5 +1170,5 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 
 // test hooks
 window.HTK = {get S() { return S; }, B, UNIT, step, place, canPlace, commitWall, wallPlan, recruit, orderMove, spawnWave, sendWave, computeFlow, cam, s2w, w2s, newState, start, save, loadSaved, restore,
-  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
+  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, trade, TRADE, WEAP, renderSheet, get selB() { return selB; }, set selB(v) { selB = v; }, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
 })();

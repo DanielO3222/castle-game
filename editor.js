@@ -9,7 +9,7 @@ const COL = ['#5d8a3a','#2f5a22','#8f8f80','#3a6a94','#5d8a3a','#a5532d','#8a6a4
 const TOOLS = [['pan','✋','Pan'],['grass','🌱','Grass'],['trees','🌲','Trees'],['scatter','🌳','Scatter'],['stone','🪨','Stone'],['iron','🔩','Iron'],
   ['water','💧','Water'],['dirt','🟫','Dirt'],['marsh','🌾','Marsh'],['erase','🧽','Eraser'],['fill','🪣','Fill'],['keep','🏰','Keep'],['spawn','🚩','Spawn']];
 const SIZES = [48, 64, 96];
-const defSettings = () => ({res:{wood:150, stone:80, iron:0, food:80, gold:60}, pop:6, diff:'normal', first:240, between:90, win:0, siege:true});
+const defSettings = () => ({res:{wood:150, stone:80, iron:0, food:80, gold:60, bow:4, spear:4, mace:0, sword:0, armor:0}, pop:6, diff:'normal', first:240, between:90, win:0, siege:true});
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => 'm' + Date.now().toString(36) + Math.floor(Math.random()*1e6).toString(36);
 
@@ -282,7 +282,7 @@ function importCard() { card(`<h2>Import a map</h2><p>Paste a map code (starts w
 function settingsCard() { const s = E.m.settings = {...defSettings(), ...E.m.settings}; s.res = {...defSettings().res, ...s.res};
   const num = (id, v, lbl) => `<label class="ed-n">${lbl}<input type="number" inputmode="numeric" id="ed-s-${id}" value="${v}" min="0" max="9999"></label>`;
   const sel = (id, v, opts) => `<select id="ed-s-${id}">${opts.map(([val, l]) => `<option value="${val}"${String(val) === String(v) ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
-  card(`<h2>Map settings</h2><div class="ed-sec">Starting goods</div><div class="ed-grid">${num('wood', s.res.wood, '🪵 Wood')}${num('stone', s.res.stone, '🪨 Stone')}${num('iron', s.res.iron, '🔩 Iron')}${num('food', s.res.food, '🍎 Food')}${num('gold', s.res.gold, '🪙 Gold')}${num('pop', s.pop, '👥 Peasants')}</div>
+  card(`<h2>Map settings</h2><div class="ed-sec">Starting goods</div><div class="ed-grid">${num('wood', s.res.wood, '🪵 Wood')}${num('stone', s.res.stone, '🪨 Stone')}${num('iron', s.res.iron, '🔩 Iron')}${num('food', s.res.food, '🍎 Food')}${num('gold', s.res.gold, '🪙 Gold')}${num('pop', s.pop, '👥 Peasants')}${num('bow', s.res.bow, '🏹 Bows')}${num('spear', s.res.spear, '🔱 Spears')}${num('mace', s.res.mace, '🔨 Maces')}${num('sword', s.res.sword, '🗡 Swords')}${num('armor', s.res.armor, '🛡 Armor')}</div>
   <div class="ed-sec">Invasions</div><div class="ed-grid2"><label>Difficulty${sel('diff', s.diff, [['easy','Easy'],['normal','Normal'],['hard','Hard']])}</label>
   <label>First wave${sel('first', s.first, [[120,'2:00'],[180,'3:00'],[240,'4:00'],[300,'5:00'],[420,'7:00'],[600,'10:00']])}</label>
   <label>Between waves${sel('between', s.between, [[45,'0:45'],[60,'1:00'],[90,'1:30'],[120,'2:00'],[180,'3:00']])}</label>
@@ -290,7 +290,7 @@ function settingsCard() { const s = E.m.settings = {...defSettings(), ...E.m.set
   <label class="ed-chk"><input type="checkbox" id="ed-s-siege"${s.siege ? ' checked' : ''}> Siege engines (rams, siege towers, catapults)</label>
   <button class="btn green" data-x="savesettings">Save settings</button><button class="btn" data-x="close">Cancel</button>`); }
 function readSettings() { const g = id => $('ed-s-' + id), n = (id, lo, hi) => Math.max(lo, Math.min(hi, Math.round(+g(id).value || 0)));
-  E.m.settings = {res:{wood:n('wood', 0, 9999), stone:n('stone', 0, 9999), iron:n('iron', 0, 9999), food:n('food', 0, 9999), gold:n('gold', 0, 9999)}, pop:n('pop', 1, 60), diff:g('diff').value,
+  E.m.settings = {res:{wood:n('wood', 0, 9999), stone:n('stone', 0, 9999), iron:n('iron', 0, 9999), food:n('food', 0, 9999), gold:n('gold', 0, 9999), bow:n('bow', 0, 999), spear:n('spear', 0, 999), mace:n('mace', 0, 999), sword:n('sword', 0, 999), armor:n('armor', 0, 999)}, pop:n('pop', 1, 60), diff:g('diff').value,
     first:+g('first').value, between:+g('between').value, win:+g('win').value, siege:g('siege').checked}; saveNow(); }
 
 $('overlay').addEventListener('click', e => {

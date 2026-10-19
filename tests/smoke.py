@@ -82,7 +82,7 @@ with sync_playwright() as p:
 
     # ---- build an economy + castle via the game API ----
     res = pg.evaluate("""(FINDSRC) => { const H = window.HTK, find = eval(FINDSRC), K = H.KX + 1, out = {};
-      H.S.res.wood = 900; H.S.res.stone = 900; H.S.res.gold = 400; H.S.res.food = 300;
+      H.S.res.wood = 900; H.S.res.stone = 900; H.S.res.gold = 400; H.S.res.food = 300; H.S.res.bow = 40; H.S.res.spear = 20;
       for (const [k, n] of [['quarry',1],['farm',3],['hovel',3],['woodcutter',1],['barracks',1],['market',1]]) for (let i = 0; i < n; i++) { const s = find([k, K, K]); out[k + i] = s && H.place(k, s.x, s.y).ok; }
       // ring of stone wall around the core
       const r0 = H.KX - 9, r1 = H.KX + 11; let n = 0;
@@ -131,7 +131,7 @@ with sync_playwright() as p:
             if s["over"] or (not s["act"] and s["n"] == w): break
         log.append(s); print("wave", w, s, "t=", sec, flush=True)
         # between waves, play like a player would: rebuild breaches, repair, recruit, man all four walls
-        pg.evaluate("""() => { const H = HTK, r0 = H.KX - 9, r1 = H.KX + 11; H.S.res.stone += 80; H.S.res.gold += 60; H.S.res.wood += 20;
+        pg.evaluate("""() => { const H = HTK, r0 = H.KX - 9, r1 = H.KX + 11; H.S.res.stone += 80; H.S.res.gold += 60; H.S.res.wood += 20; H.S.res.bow += 12; H.S.res.spear += 6;
           for (const [a, b, c, d] of [[r0,r0,r1,r0],[r1,r0,r1,r1],[r1,r1,r0,r1],[r0,r1,r0,r0]]) H.commitWall('wall', a, b, c, d);
           for (const b of H.S.b) b.hp = H.B[b.k].hp;
           H.S.pop = Math.max(H.S.pop, 12); let i = 0; while (H.soldiers().length < 12 && H.idle() > 0 && i++ < 20) H.recruit(H.soldiers().length % 4 === 3 ? 'spear' : 'archer');
@@ -186,8 +186,9 @@ with sync_playwright() as p:
     check(iron > 0, f"iron mine produces iron ({iron})")
     pg.evaluate("() => { HTK.S.res.gold = 100; HTK.S.res.wood += 60; HTK.S.res.stone += 30; const H = HTK; const s = eval(arguments[0]); }", FIND) if False else None
     sw = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC); H.S.res.gold = 100; H.S.res.wood += 60; H.S.res.stone += 30; H.S.pop = Math.max(H.S.pop, 10);
-       const s = find(['barracks', 32, 36]); H.place('barracks', s.x, s.y); const before = H.S.res.iron; const r = H.recruit('sword'); return {ok: r.ok, why: r.why, iron: before - H.S.res.iron}; }""", FIND)
-    check(sw["ok"] and sw["iron"] == 5, f"swordsman recruited for 5 iron {sw}")
+       const s = find(['barracks', 32, 36]); H.place('barracks', s.x, s.y); H.S.res.sword = 0; H.S.res.armor = 1; const no = H.recruit('sword'); H.S.res.sword = 1; const r = H.recruit('sword');
+       return {ok: r.ok, no: no.ok, why: no.why, left: H.S.res.sword + H.S.res.armor}; }""", FIND)
+    check(sw["ok"] and not sw["no"] and sw["left"] == 0 and "Armory" in sw["why"], f"swordsman needs a sword + armor from the Armory {sw}")
 
     # ---- woodcutters really chop trees ----
     r = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC); H.newState(7); H.start(); H.S.tut = 99;
@@ -330,6 +331,53 @@ with sync_playwright() as p:
       for (let i = 0; i < 30*12; i++) H.step(1/30); H.cam.x = (r1 + 3)*H.T; H.cam.y = (H.KY + 1)*H.T; H.cam.z = 1.25; }""", RING)
     pg.wait_for_timeout(300); pg.screenshot(path=SS + "18-siege.png")
     check("siege tower" in pg.inner_text("#wave-p"), "wave preview lists siege engines: " + pg.inner_text("#wave-p"))
+
+    # ================= WEAPONS ECONOMY =================
+    pg.evaluate("() => { HTK.newState(21); HTK.start(); HTK.S.tut = 99; }"); pg.wait_for_timeout(300)
+    st0 = pg.evaluate("() => ({bow: HTK.S.res.bow, spear: HTK.S.res.spear, chip: document.querySelector('#r-arms b').textContent})")
+    check(st0["bow"] == 4 and st0["spear"] == 4 and st0["chip"] == "8", f"new game starts with 4 bows + 4 spears, HUD weapons chip shows them {st0}")
+    w1 = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC), S = H.S; S.res.wood = 400; S.res.stone = 200; S.res.iron = 40; S.res.food = 400; S.pop = 12;
+      const ids = {}; for (const k of ['fletcher','poleturner','blacksmith','armorer']) { const s = find([k, H.KX + 1, H.KY + 6]); H.place(k, s.x, s.y); ids[k] = H.bAt(s.x, s.y).id; }
+      const w0 = S.res.wood; for (let i = 0; i < 30*20; i++) H.step(1/30);
+      const fl = H.byId.get(ids.fletcher); return {ids, need: fl.need, wood: w0 - S.res.wood, bow: S.res.bow}; }""", FIND)
+    check(w1["need"] == "armory" and w1["bow"] == 4, f"workshops wait (🛡 bubble) and use no material until there is an Armory {w1}")
+    pg.evaluate("(FINDSRC) => { const H = HTK, find = eval(FINDSRC); const s = find(['armory', H.KX - 6, H.KY + 6]); H.place('armory', s.x, s.y); }", FIND)
+    trace = pg.evaluate("""(ids) => { const H = HTK, S = H.S, fl = H.byId.get(ids.fletcher), ar = S.b.find(b => b.k === 'armory'), out = {carry: false, nearArmory: false, hammer: false};
+      const w0 = S.res.wood, iron0 = S.res.iron, b0 = S.res.bow, sp0 = S.res.spear, ar0 = S.res.armor, sw0 = S.res.sword;
+      for (let i = 0; i < 30*45; i++) { H.step(1/30); const w = H.workers.get(fl.id); if (w && w.has && w.st === 0) out.hammer = true;
+        if (w && w.st === 1 && w.what === 'bow') { out.carry = true; if (Math.hypot(w.x - ar.x - 1, w.y - ar.y - 2) < 1.5) out.nearArmory = true; } }
+      return {...out, bows: S.res.bow - b0, spears: S.res.spear - sp0, swords: S.res.sword - sw0, armor: S.res.armor - ar0, iron: iron0 - S.res.iron}; }""", w1["ids"])
+    check(trace["hammer"] and trace["carry"] and trace["nearArmory"], f"fletcher works at the bench, then visibly carries the bow to the Armory {trace}")
+    check(trace["bows"] >= 2 and trace["spears"] >= 2 and trace["swords"] >= 1 and trace["armor"] >= 1 and trace["iron"] >= 4, f"fletcher, poleturner, blacksmith and armorer all deliver {trace}")
+    pg.evaluate("(id) => { const H = HTK; H.selB = id; H.renderSheet(true); }", w1["ids"]["blacksmith"]); pg.wait_for_timeout(100)
+    pg.click("#sheet [data-a='out:mace']"); pg.wait_for_timeout(50)
+    m = pg.evaluate("(id) => { const H = HTK, m0 = H.S.res.mace; for (let i = 0; i < 30*40; i++) H.step(1/30); return {out: H.byId.get(id).out, maces: H.S.res.mace - m0}; }", w1["ids"]["blacksmith"])
+    check(m["out"] == "mace" and m["maces"] >= 1, f"blacksmith switched to maces from its panel {m}")
+    pg.evaluate("() => { const H = HTK; H.selB = null; H.renderSheet(); H.cam.x = (H.KX - 1)*H.T; H.cam.y = (H.KY + 7)*H.T; H.cam.z = 1.3; H.step(1/30); }")
+    for _ in range(40):
+        if pg.evaluate("() => [...HTK.workers.values()].some(w => w.st === 1 && w.what)"): break
+        pg.evaluate("() => { for (let i = 0; i < 15; i++) HTK.step(1/30); }")
+    pg.wait_for_timeout(150); pg.screenshot(path=SS + "24-weapon-workshops.png")
+    rc = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC), S = H.S; const s = find(['barracks', H.KX + 1, H.KY - 6]); H.place('barracks', s.x, s.y); S.pop = Math.max(S.pop, 20); S.res.gold = 300;
+      S.res.bow = 0; const noBow = H.recruit('archer'); S.res.bow = 2; const g0 = S.res.gold; const a = H.recruit('archer'); const after = {bow: S.res.bow, gold: g0 - S.res.gold};
+      const sp0 = S.res.spear; const sp = H.recruit('spear'); S.res.mace = Math.max(1, S.res.mace); const mc0 = S.res.mace; const mc = H.recruit('mace');
+      return {noBow: noBow.ok, why: noBow.why, a: a.ok, ...after, sp: sp.ok && sp0 - S.res.spear === 1, mc: mc.ok && mc0 - S.res.mace === 1, kinds: H.soldiers().map(u => u.k).join()}; }""", FIND)
+    check(not rc["noBow"] and "bows" in rc["why"] and rc["a"] and rc["bow"] == 1 and rc["gold"] == 12, f"archer takes a bow + 12 gold; with no bows recruiting explains why {rc}")
+    check(rc["sp"] and rc["mc"] and "mace" in rc["kinds"], f"spearman takes a spear, maceman takes a mace {rc['kinds']}")
+    mk = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC), S = H.S; const s = find(['market', H.KX + 6, H.KY + 1]); H.place('market', s.x, s.y); H.selB = H.bAt(s.x, s.y).id; H.renderSheet(true);
+      const rows = document.querySelectorAll('#sheet .mr').length, T = H.TRADE; const fair = Object.keys(T.buy).every(r => T.sell[r] < T.buy[r]);
+      S.res.gold = 100; H.renderSheet(true); return {rows, fair, goods: Object.keys(T.buy).join()}; }""", FIND)
+    check(mk["rows"] == 9 and mk["fair"], f"market lists all 9 goods with buy and sell prices, sell < buy ({mk['goods']})")
+    pg.wait_for_timeout(100); pg.screenshot(path=SS + "25-market.png")
+    g0 = pg.evaluate("() => ({g: HTK.S.res.gold, sw: HTK.S.res.sword, wood: HTK.S.res.wood})")
+    pg.click("#sheet [data-a='buy:sword']"); pg.click("#sheet [data-a='sell:sword']"); pg.click("#sheet [data-a='sell:wood']")
+    g1 = pg.evaluate("() => ({g: HTK.S.res.gold, sw: HTK.S.res.sword, wood: HTK.S.res.wood})")
+    check(round(g1["g"] - g0["g"]) == -36 + 14 + 5 and g1["sw"] == g0["sw"] and round(g0["wood"] - g1["wood"]) == 10, f"buy a sword (-36), sell it back (+14), sell 10 wood (+5) {g0} -> {g1}")
+    pg.evaluate("() => { HTK.S.res.gold = 3; }"); pg.click("#sheet [data-a='buy:armor']")
+    check("Not enough gold" in pg.inner_text("#toasts"), "buying without gold is refused")
+    old = pg.evaluate("""() => { const H = HTK, o = JSON.parse(JSON.stringify(H.S)); for (const r of H.WEAP) delete o.res[r]; H.restore(o); return H.WEAP.map(r => H.S.res[r]); }""")
+    check(old == [4, 4, 0, 0, 0], f"older saves without weapons get the starting weapons {old}")
+    pg.evaluate("() => { HTK.selB = null; HTK.renderSheet(); }")
 
     # ================= MAP EDITOR =================
     ET2S = """([x,y]) => { const E = HTKED.E, t = document.getElementById('ed-top').getBoundingClientRect(), b = document.getElementById('ed-bottom').getBoundingClientRect();
