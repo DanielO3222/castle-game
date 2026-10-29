@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-const VERSION = '1.5.1';
+const VERSION = '1.5.2';
 const T = 32, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -79,6 +79,7 @@ let S = null;               // saved game state
 let ter = new Uint8Array(N*N);   // 0 grass 1 forest 2 rock 3 water
 let occ = new Int32Array(N*N);   // building id per tile
 let byId = new Map();
+let regDirty = true, regP = null, regA = null;
 let flow = new Float32Array(N*N), flowP = new Float32Array(N*N), flowDirty = true;
 let terrainCv = null, miniBase = null;
 let projectiles = [], particles = [], workers = new Map();
@@ -151,7 +152,7 @@ function addB(k, x, y, hp) { const b = {id:S.nid++, k, x, y, hp: hp ?? B[k].hp, 
 function reocc() {
   occ.fill(0); byId.clear();
   for (const b of S.b) { byId.set(b.id, b); const d = B[b.k]; if (d.pit) continue; for (let j = 0; j < d.h; j++) for (let i = 0; i < d.w; i++) occ[idx(b.x+i, b.y+j)] = b.id; }
-  flowDirty = true;
+  flowDirty = regDirty = true;
 }
 const bAt = (x, y) => inb(x,y) ? (byId.get(occ[idx(x,y)]) || pitAt(x, y)) : null;
 const pitAt = (x, y) => S.b.find(b => b.k === 'pit' && b.x === x && b.y === y) || null;
@@ -242,14 +243,31 @@ function demolish(b, frac = 0.5) {
 function destroyB(b) {
   S.b = S.b.filter(x => x !== b); workers.delete(b.id); reocc();
   const d = B[b.k]; for (let i = 0; i < 18; i++) puff((b.x + Math.random()*d.w)*T, (b.y + Math.random()*d.h)*T, '#8a7c66', 1);
-  if (b.tm === 1) { flowDirty = true; if (b.k === 'keep') vsWin(); else if (!d.line) toast('🔥 Enemy ' + d.name + ' destroyed!', 'big'); return; }
+  if (b.tm === 1) { flowDirty = regDirty = true; if (b.k === 'keep') vsWin(); else if (!d.line) toast('🔥 Enemy ' + d.name + ' destroyed!', 'big'); return; }
   if (b.k === 'keep') gameOver(); else if (!d.line) toast(d.name + ' destroyed!', 'bad');
 }
 function repairCost(b) { const d = B[b.k], f = 1 - b.hp/d.hp; const c = {}; for (const [r,v] of Object.entries(d.cost)) c[r] = Math.ceil(v*f*0.6); if (b.k === 'keep') c.stone = Math.ceil(f*60); return c; }
 
 // ---------- pathing ----------
 const passT = i => ter[i] === 0 || ter[i] === 4 || ter[i] === 6 || ter[i] === 7;   // trees, rocks, iron and water block all soldiers and enemies
-const walkF = i => { if (!passT(i)) return false; const o = occ[i]; if (!o) return true; const b = byId.get(o); return !!(b && B[b.k].walk); };
+// walls, palisades and towers block everyone on the ground. Only a side's own Gatehouse lets its people through;
+// soldiers may climb onto their own walls, but only get down again on the side they came up from.
+const walkF = i => { if (!passT(i)) return false; const o = occ[i]; if (!o) return true; const b = byId.get(o); return !!(b && B[b.k].walk && !b.tm); };
+const groundOK = (i, tm) => { if (!passT(i)) return false; const o = occ[i]; if (!o) return true; const b = byId.get(o); return !!(b && b.k === 'gate' && (b.tm | 0) === tm); };
+function labelRegions(R, tm) { R.fill(0); let id = 0; const q = new Int32Array(N*N);
+  for (let s = 0; s < N*N; s++) { if (R[s] || !groundOK(s, tm)) continue; id++; let h = 0, t = 0; q[t++] = s; R[s] = id;
+    while (h < t) { const c = q[h++], x = c % N;
+      if (x > 0 && !R[c - 1] && groundOK(c - 1, tm)) { R[c - 1] = id; q[t++] = c - 1; }
+      if (x < N - 1 && !R[c + 1] && groundOK(c + 1, tm)) { R[c + 1] = id; q[t++] = c + 1; }
+      if (c >= N && !R[c - N] && groundOK(c - N, tm)) { R[c - N] = id; q[t++] = c - N; }
+      if (c < N*N - N && !R[c + N] && groundOK(c + N, tm)) { R[c + N] = id; q[t++] = c + N; } } } }
+function ensureReg() { if (!regP || regP.length !== N*N) { regP = new Int32Array(N*N); regA = new Int32Array(N*N); regDirty = true; }
+  if (!regDirty) return; labelRegions(regP, 0); labelRegions(regA, 1); regDirty = false; }
+function labelsNear(R, x, y) { x = Math.floor(x); y = Math.floor(y); if (inb(x, y) && R[idx(x, y)]) return [R[idx(x, y)]]; const out = [];
+  for (const [dx, dy] of DIRS) { const nx = x + dx, ny = y + dy; if (inb(nx, ny) && R[idx(nx, ny)]) out.push(R[idx(nx, ny)]); } return out; }
+function canReach(tm, fx, fy, tx, ty) { ensureReg(); const R = tm ? regA : regP, a = labelsNear(R, fx, fy); if (!a.length) return true; const b = labelsNear(R, tx, ty); return !b.length || a.some(v => b.includes(v)); }
+function uRegion(u) { ensureReg(); const t = tileOf(u); if (regP[t]) { u.gt = t; return regP[t]; } if (u.gt != null && regP[u.gt]) return regP[u.gt]; return labelsNear(regP, u.x, u.y)[0] || 0; }
+function uWalk(u) { const r = uRegion(u); return r ? (i => walkF(i) && (regP[i] ? regP[i] === r : true)) : walkF; }
 class Heap { constructor() { this.a = []; } push(n, p) { const a = this.a; a.push([p,n]); let i = a.length-1; while (i > 0) { const q = (i-1) >> 1; if (a[q][0] <= a[i][0]) break; [a[q],a[i]] = [a[i],a[q]]; i = q; } }
   pop() { const a = this.a, top = a[0], last = a.pop(); if (a.length) { a[0] = last; let i = 0; for (;;) { const l = 2*i+1, r = l+1; let m = i; if (l < a.length && a[l][0] < a[m][0]) m = l; if (r < a.length && a[r][0] < a[m][0]) m = r; if (m === i) break; [a[m],a[i]] = [a[i],a[m]]; i = m; } } return top[1]; }
   get size() { return this.a.length; } }
@@ -257,14 +275,14 @@ const DIRS = [[1,0,1],[-1,0,1],[0,1,1],[0,-1,1],[1,1,1.414],[1,-1,1.414],[-1,1,1
 function enterCost(i) {
   if (!passT(i)) return Infinity;
   let c = ter[i] === 7 ? 1.6 : 1; const o = occ[i];
-  if (o) { const b = byId.get(o); if (b.tm === 1) return B[b.k].walk ? 1.2 : Infinity; if (b.k === 'keep') return 0; if (b.bridge) return 1; c += B[b.k].hp / 25; }
+  if (o) { const b = byId.get(o); if (b.tm === 1) return b.k === 'gate' ? 1.2 : Infinity; if (b.k === 'keep') return 0; if (b.bridge) return 1; c += B[b.k].hp / 25; }
   return c;
 }
 // cost for the player's soldiers marching on the enemy lord's castle (Vs Computer)
 function enterCostP(i) {
   if (!passT(i)) return Infinity;
   let c = ter[i] === 7 ? 1.6 : 1; const o = occ[i];
-  if (o) { const b = byId.get(o); if (!b.tm) return B[b.k].walk ? 1 : Infinity; if (b.k === 'keep') return 0; c += B[b.k].hp / 25; }
+  if (o) { const b = byId.get(o); if (!b.tm) return b.k === 'gate' ? 1 : Infinity; if (b.k === 'keep') return 0; c += B[b.k].hp / 25; }
   return c;
 }
 const openE = i => passT(i) && !occ[i];
@@ -344,11 +362,15 @@ function orderMove(ids, tx, ty) {
     const cx = c % N, cy = (c / N) | 0;
     for (const [dx,dy] of DIRS.slice(0,4)) { const nx = cx+dx, ny = cy+dy; if (!inb(nx,ny)) continue; const n = idx(nx,ny); if (seen[n]) continue; seen[n] = 1; if (walkF(n) && (kindOk(n) || !onStruct || Math.hypot(nx-tx,ny-ty) < 6)) q.push(n); }
   }
-  let ok = 0;
+  let ok = 0, blocked = 0; ensureReg();
   units.forEach((u, i) => {
-    const g = spots[i % spots.length]; const p = astar(Math.floor(u.x), Math.floor(u.y), g % N, (g / N) | 0);
+    let g = spots[i % spots.length]; const r = uRegion(u), wf = uWalk(u);
+    let p = r && regP[g] && regP[g] !== r ? null : astar(Math.floor(u.x), Math.floor(u.y), g % N, (g / N) | 0, wf);
+    if (!p && r) { blocked++; let best = -1, bd = 1e9; for (let j = 0; j < N*N; j++) if (regP[j] === r) { const dd = Math.hypot(j % N - tx, ((j / N) | 0) - ty); if (dd < bd) { bd = dd; best = j; } }
+      if (best >= 0) { g = best; p = astar(Math.floor(u.x), Math.floor(u.y), g % N, (g / N) | 0, wf); } }
     if (p) { u.path = p; u.px = g % N + .5; u.py = ((g / N) | 0) + .5; u.tg = 0; u.raid = 0; ok++; }
   });
+  if (blocked && typeof document !== 'undefined') toast(S.mode === 'vs' && bAt(tx, ty)?.tm ? '🚧 Enemy walls block the way. Tap an enemy building to attack it' : '🚧 Walls block the way. Troops go as close as they can: build a Gatehouse to get through', 'bad');
   return ok;
 }
 function nearestEnemyOf(u, r) { let best = null, bd = r; for (const e of S.u) if (e.tm !== u.tm && e.hp > 0) { const d = Math.hypot(e.x-u.x, e.y-u.y); if (d < bd) { bd = d; best = e; } } return best; }
@@ -364,7 +386,7 @@ function moveTo(u, tx, ty, spd, dt) {
 }
 function stepPlayerUnit(u, dt) {
   const d = UNIT[u.k]; u.cd -= dt; const el = elevated(u); u.el = el;
-  if (u.path.length) { const n = u.path[0]; if (!walkF(n)) { const p = astar(Math.floor(u.x), Math.floor(u.y), Math.floor(u.px), Math.floor(u.py)); u.path = p || []; return; }
+  if (u.path.length) { const n = u.path[0]; if (!uWalk(u)(n)) { const p = astar(Math.floor(u.x), Math.floor(u.y), Math.floor(u.px), Math.floor(u.py), uWalk(u)); u.path = p || []; return; }
     if (moveTo(u, n % N + .5 + (u.path.length === 1 ? u.jx*.6 : 0), ((n / N) | 0) + .5 + (u.path.length === 1 ? u.jy*.6 : 0), d.spd, dt)) u.path.shift(); }
   if (u.k === 'catapult') { stepPlayerCatapult(u, d, dt); return; }
   if (u.raid && !u.path.length) {
@@ -387,7 +409,7 @@ function stepPlayerUnit(u, dt) {
       if (dd < .75) { if (u.cd <= 0) { hurtU(tg, d.dmg); u.cd = d.cd; u.atk = .2; } }
       else stepDirect(u, tg.x, tg.y, d.spd, dt);
     } else if (Math.hypot(u.px-u.x, u.py-u.y) > .3) {
-      if (!stepDirect(u, u.px, u.py, d.spd, dt)) { const p = astar(Math.floor(u.x), Math.floor(u.y), Math.floor(u.px), Math.floor(u.py)); if (p) u.path = p; }
+      if (!stepDirect(u, u.px, u.py, d.spd, dt) && (u.rp = (u.rp || 0) - dt) <= 0) { u.rp = 1; const p = canReach(0, u.x, u.y, u.px, u.py) || occ[idx(Math.floor(u.px), Math.floor(u.py))] ? astar(Math.floor(u.x), Math.floor(u.y), Math.floor(u.px), Math.floor(u.py), uWalk(u)) : null; if (p) u.path = p; else { u.px = u.x; u.py = u.y; } }
     }
   }
   if (u.atk) u.atk = Math.max(0, u.atk - dt);
@@ -409,8 +431,8 @@ function stepPlayerCatapult(u, d, dt) {
 }
 function orderRaid(ids) { const us = ids.map(uById).filter(Boolean); for (const u of us) { u.raid = 1; u.path = []; u.nt = -1; } return us.length; }
 function stepDirect(u, tx, ty, spd, dt) {
-  const ox = u.x, oy = u.y; moveTo(u, tx, ty, spd, dt);
-  if (!walkF(tileOf(u))) { const nx = u.x; u.x = ox; if (!walkF(tileOf(u))) { u.x = nx; u.y = oy; if (!walkF(tileOf(u))) { u.x = ox; u.y = oy; return false; } } }
+  const ox = u.x, oy = u.y, t0 = tileOf(u), wf = uWalk(u), ok = i => i === t0 || wf(i); moveTo(u, tx, ty, spd, dt);
+  if (!ok(tileOf(u))) { const nx = u.x; u.x = ox; if (!ok(tileOf(u))) { u.x = nx; u.y = oy; if (!ok(tileOf(u))) { u.x = ox; u.y = oy; return false; } } }
   return true;
 }
 const onWall = u => { const o = occ[tileOf(u)]; const b = o && byId.get(o); return !!(b && B[b.k].walk); };
@@ -424,7 +446,7 @@ function stepCatapult(u, d, dt) {
   return true;
 }
 function dockSiegeTower(u, b) {
-  u.dock = b.id; b.bridge = u.id; flowDirty = true;
+  u.dock = b.id; b.bridge = u.id; flowDirty = regDirty = true;
   for (let i = 0; i < UNIT.stower.crew; i++) { const c = addU('raider', 1, u.x + (Math.random() - .5)*.4, u.y + (Math.random() - .5)*.4); c.hp = c.mhp = Math.round(UNIT.raider.hp*(1 + .08*(S.wave.n - 1))); c.edge = u.edge; }
   toast('🗼 A siege tower reached your wall! Enemies are climbing over', 'bad');
 }
@@ -445,22 +467,49 @@ function stepEnemy(u, dt) {
   }
   stepMove(u, d, dt);
 }
-function stepGuard(u, d, dt) {   // the enemy lord's troops at home: defend, then go back to their post
-  const ak = aiKeep(), R = S.ai && S.ai.alarm ? 15 : 8; let foe = null, fd = 1e9;
+function stepGuard(u, d, dt) {   // the enemy lord's troops at home: man the towers, patrol, defend, then go back to their post
+  const ak = aiKeep(); if (!ak) { u.guard = 0; u.post = 0; u.el = 0; return; }
+  if (u.post) { const tw = byId.get(u.post); if (!tw) { u.post = 0; u.el = 0; u.role = 0; u.x = u.hx; u.y = u.hy; }
+    else { u.el = 1; u.x = tw.x + 1 + u.jx*.6; u.y = tw.y + 1.15; const foe = nearestEnemyOf(u, d.range + 2.5);
+      if (foe && u.cd <= 0) { shoot(u.x, u.y - .5, foe, d.dmg, 1, 26, u.id); u.cd = d.cd; u.fx = foe.x < u.x ? -1 : 1; } return; } }
+  const R = S.ai && S.ai.alarm ? 15 : 8; let foe = null, fd = 1e9;
   for (const p of S.u) if (p.tm === 0 && p.hp > 0) { const dh = Math.hypot(p.x - u.hx, p.y - u.hy), dd = Math.hypot(p.x - u.x, p.y - u.y); if ((dh < R || dd < (d.range || 1.8)) && dd < fd) { fd = dd; foe = p; } }
   if (foe && !d.siege) { if (u.k === 'earcher') { if (fd < d.range) { if (u.cd <= 0) { shoot(u.x, u.y, foe, d.dmg, 1, 10, u.id); u.cd = d.cd; } return; } }
     else if (fd < .75) { if (u.cd <= 0) { hurtU(foe, d.dmg); u.cd = d.cd; u.atk = .2; } return; }
-    guardWalk(u, foe.x, foe.y, d.spd, dt); return; }
-  if (!ak) { u.guard = 0; return; }
-  if (Math.hypot(u.hx - u.x, u.hy - u.y) > .3) guardWalk(u, u.hx, u.hy, d.spd, dt);
+    guardGo(u, foe.x, foe.y, d.spd, dt); return; }
+  let tx = u.hx, ty = u.hy;
+  if (u.role === 'patrol' && S.ai.wps && S.ai.wps.length) { const wp = S.ai.wps[(u.wp | 0) % S.ai.wps.length]; tx = wp.x; ty = wp.y;
+    if (Math.hypot(tx - u.x, ty - u.y) < .6 || u.gfail) { u.gfail = 0; u.wp = ((u.wp | 0) + 1) % S.ai.wps.length; } }
+  if (Math.hypot(tx - u.x, ty - u.y) > .3) { guardGo(u, tx, ty, d.spd*(u.role === 'patrol' ? .7 : 1), dt); if (u.gfail && u.role !== 'patrol') { u.gfail = 0; const h = aiHome(ak, u.k); u.hx = h.x; u.hy = h.y; u.role = 0; } }
+  else if (u.role === 'post' && u.tw) { const tw = byId.get(u.tw); if (tw && tw.k === 'tower') { u.post = tw.id; u.el = 1; } else u.role = 0; }
 }
-function guardWalk(u, tx, ty, spd, dt) { const ox = u.x, oy = u.y; moveTo(u, tx, ty, spd, dt); const ti = tileOf(u), ob = occ[ti] && byId.get(occ[ti]);
-  if (!passT(ti) || (ob && !(ob.tm === 1 && B[ob.k].walk) && !ob.bridge)) { u.x = ox; u.y = oy; const m = moveTo(u, tx, oy, spd, dt), t2 = tileOf(u), o2 = occ[t2] && byId.get(occ[t2]); if (!passT(t2) || (o2 && !(o2.tm === 1 && B[o2.k].walk))) { u.x = ox; u.y = oy; } } }
+const walkAIg = i => groundOK(i, 1);
+function guardGo(u, tx, ty, spd, dt) {   // A* through the lord's own gate; never over walls
+  const fx = Math.floor(u.x), fy = Math.floor(u.y), gx = Math.floor(tx), gy = Math.floor(ty);
+  if (fx === gx && fy === gy || Math.hypot(tx - u.x, ty - u.y) < 1.2) { guardWalk(u, tx, ty, spd, dt); return; }
+  const key = gx + N*gy; u.rp = (u.rp || 0) - dt; if (!inb(gx, gy) || !walkAIg(key)) { u.gfail = 1; u.gp = null; return; }   // can't stand there (a building went up on it)
+  if ((u.gk !== key || !u.gp) && u.rp <= 0) { u.gk = key; u.rp = .9 + Math.random()*.4;
+    u.gp = canReach(1, u.x, u.y, tx, ty) ? astar(fx, fy, gx, gy, walkAIg, 2500) : null; if (!u.gp) u.gfail = 1; }
+  if (u.gp && u.gp.length) { const n = u.gp[0]; if (u.gp.length > 1 && !walkAIg(n)) { u.gp = null; return; }
+    const last = u.gp.length === 1 ? .5 : 0; if (moveTo(u, n % N + .5 + u.jx*last, ((n / N) | 0) + .5 + u.jy*last, spd, dt)) u.gp.shift(); return; }
+  if (u.gp) u.gp = null;
+}
+function guardWalk(u, tx, ty, spd, dt) { const ox = u.x, oy = u.y, t0 = tileOf(u); moveTo(u, tx, ty, spd, dt); const ti = tileOf(u);
+  if (ti !== t0 && !walkAIg(ti)) { u.x = ox; u.y = oy; moveTo(u, tx, oy, spd, dt); const t2 = tileOf(u); if (t2 !== t0 && !walkAIg(t2)) { u.x = ox; u.y = oy; } } }
+// the last word on movement: solid walls and buildings can't be walked into or squeezed past diagonally, whatever the AI wanted
+function standOK(u, t, t0) { if (t < 0 || t >= N*N || !passT(t)) return false; const o = occ[t]; if (!o) return true; const b = byId.get(o); if (!b) return true;
+  if (b.bridge) return true; if (b.k === 'gate') return (b.tm | 0) === u.tm; if (u.post && b.id === u.post) return true;
+  if (B[b.k].walk) { if ((b.tm | 0) === u.tm && u.tm === 0) return true; const o0 = occ[t0], b0 = o0 && byId.get(o0); if (b0 && (b0.bridge || (B[b0.k].walk && b0.k !== 'gate' && !b0.tm))) return u.tm === 1 && !b.tm; }
+  return false; }
+function canStep(u, t0, t1) { if (!standOK(u, t1, t0)) return false;
+  const x0 = t0 % N, y0 = (t0 / N) | 0, x1 = t1 % N, y1 = (t1 / N) | 0; if (Math.abs(x1 - x0) > 1 || Math.abs(y1 - y0) > 1 || x0 === x1 || y0 === y1) return true;
+  return standOK(u, x1 + N*y0, t0) || standOK(u, x0 + N*y1, t0); }
 function stepMove(u, d, dt) {
   const tx = Math.floor(u.x), ty = Math.floor(u.y), pl = u.tm === 0;
   if (u.nt == null || u.nt < 0 || u.fv !== fieldVer) { u.nt = bestStep(tx, ty, pl); u.fv = fieldVer; }
   if (u.nt < 0) return;
   const o = occ[u.nt], ob = o && byId.get(o), own = ob && (ob.tm | 0) === u.tm;
+  if (own && ob.k !== 'gate' && !ob.bridge) { u.nt = -1; u.fv = -1; return; }   // never walk over your own walls or buildings
   if (o && !(ob && ob.bridge) && !own) {
     const b = ob; const bx = u.nt % N + .5, by = ((u.nt / N) | 0) + .5;
     if (u.k === 'stower' && Math.hypot(bx - u.x, by - u.y) < 1.15 && (b.k === 'wall' || b.k === 'palisade' || b.k === 'gate' || b.k === 'tower')) { dockSiegeTower(u, b); return; }
@@ -509,10 +558,11 @@ function spawnWave() {
 function sendWave() { if (S.over) return; S.wave.next = S.t; }
 
 // ---------- simulation ----------
-function dropFor(res, fromX, fromY) {
+function dropFor(res, fromX, fromY, tm = 0) {
   let best = null, bd = Infinity;
   const weap = WEAP.includes(res);
-  for (const b of S.b) { const d = B[b.k]; if (b.tm) continue; if ((b.k !== 'keep' || weap) && !(d.drop && d.drop.includes(res))) continue; const dist = Math.hypot(b.x + d.w/2 - fromX, b.y + d.h - fromY) + (b.k === 'keep' ? 4 : 0); if (dist < bd) { bd = dist; best = b; } }
+  for (const b of S.b) { const d = B[b.k]; if ((b.tm | 0) !== tm) continue; if ((b.k !== 'keep' || weap) && !(d.drop && d.drop.includes(res))) continue; let dist = Math.hypot(b.x + d.w/2 - fromX, b.y + d.h - fromY) + (b.k === 'keep' ? 4 : 0);
+    if (!canReach(tm, fromX, fromY, b.x + d.w/2, b.y + d.h + .2)) dist += 1000; if (dist < bd) { bd = dist; best = b; } }
   return best;
 }
 function stepEconomy(dt) {
@@ -532,21 +582,31 @@ function stepEconomy(dt) {
     if (!b.staffed) { workers.delete(b.id); return; }
     let w = workers.get(b.id); const door = {x: b.x + d.w/2, y: b.y + d.h + .3};
     if (!w) { w = {st:0, t:Math.random()*2, x:door.x, y:door.y, an:0}; workers.set(b.id, w); }
-    if (d.repair) { stepRepairer(b, w, door, dt); return; }
-    if (d.chop && w.st !== 1 && w.st !== 2) { stepChopper(b, d, w, door, dt); return; }
-    if (d.craft && w.st === 0) { const out = b.out || d.prod;
-      if (!w.has) { b.need = !dropFor(out, door.x, door.y) ? 'armory' : !afford(d.inp) ? Object.keys(d.inp).find(r => S.res[r] < d.inp[r]) : null;
-        w.x = door.x; w.y = door.y; w.sw = 0; if (b.need) return; pay(d.inp); w.has = 1; w.t = 0; }
-      b.need = null; w.t += dt; w.x = door.x - .4; w.y = door.y - .15; w.sw = (w.t % .7)/.7; const imp = Math.floor(w.t/.7); if (imp !== w.imp) { w.imp = imp; if (imp % 2 === 0 && particles.length < 250) puff(w.x*T + 9, w.y*T - 2, out === 'bow' || out === 'spear' ? '#b89868' : '#9a8a78', 1); }
-      if (w.t >= d.work) { const dp = dropFor(out, door.x, door.y); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.what = out; w.has = 0; w.sw = 0; } return; }
-    if (d.mine && w.st === 0) { w.t += dt; w.x = door.x - .4; w.y = door.y - .15; w.sw = (w.t % .8)/.8; const imp = Math.floor(w.t/.8); if (imp !== w.imp) { w.imp = imp; if (particles.length < 250) puff(w.x*T + 9, w.y*T - 4, d.on === 5 ? '#a8502c' : '#a8a49a', 2); }
-      if (w.t >= d.work) { const dp = dropFor(d.prod, door.x, door.y); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.sw = 0; } return; }
-    if (w.st === 0) { w.t += dt; w.x = door.x + Math.sin(S.t*2 + b.id)*.3; w.y = door.y; if (w.t >= d.work) { const dp = dropFor(d.prod, door.x, door.y); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; } }
-    else if (w.st === 1) { const dp = byId.get(w.to); if (!dp) { w.st = 0; w.t = 0; return; } const tx = dp.x + B[dp.k].w/2, ty = dp.y + B[dp.k].h + .2; w.an += dt*8;
-      if (walkLeg(w, tx, ty, dt)) { const g = w.what || d.prod; S.res[g] = (S.res[g] || 0) + w.carry; w.carry = 0; w.st = 2; w.what = null; floatTxt(tx*T, ty*T - 20, '+' + d.amt + ICON[g]); } }
-    else { if (walkLeg(w, door.x, door.y, dt)) { w.st = 0; w.t = 0; } }
+    stepWorker(b, d, w, door, dt);
+    if (w.blocked && !b.blocked && S.t - (S.blkT ?? -99) > 12) { S.blkT = S.t; toast('🚧 The ' + d.name + "'s worker is walled in. Put a Gatehouse in the wall", 'bad', 3500); }
+    b.blocked = !!w.blocked;
   });
+  if (S.mode === 'vs' && S.ai) stepAIWorkers(dt);
 }
+function stepWorker(b, d, w, door, dt) { const tm = b.tm | 0;
+    if (d.repair) { stepRepairer(b, w, door, dt); return; }
+  if (d.chop && w.st !== 1 && w.st !== 2) { stepChopper(b, d, w, door, dt); return; }
+  if (d.craft && w.st === 0) { const out = b.out || d.prod;
+    if (!w.has) { b.need = !dropFor(out, door.x, door.y, tm) ? 'armory' : !afford(d.inp) ? Object.keys(d.inp).find(r => S.res[r] < d.inp[r]) : null;
+      w.x = door.x; w.y = door.y; w.sw = 0; if (b.need) return; pay(d.inp); w.has = 1; w.t = 0; }
+    b.need = null; w.t += dt; w.x = door.x - .4; w.y = door.y - .15; w.sw = (w.t % .7)/.7; const imp = Math.floor(w.t/.7); if (imp !== w.imp) { w.imp = imp; if (imp % 2 === 0 && particles.length < 250) puff(w.x*T + 9, w.y*T - 2, out === 'bow' || out === 'spear' ? '#b89868' : '#9a8a78', 1); }
+    if (w.t >= d.work) { const dp = dropFor(out, door.x, door.y, tm); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.what = out; w.has = 0; w.sw = 0; } return; }
+  if (d.mine && w.st === 0) { w.t += dt; w.x = door.x - .4; w.y = door.y - .15; w.sw = (w.t % .8)/.8; const imp = Math.floor(w.t/.8); if (imp !== w.imp) { w.imp = imp; if (particles.length < 250) puff(w.x*T + 9, w.y*T - 4, d.on === 5 ? '#a8502c' : '#a8a49a', 2); }
+    if (w.t >= d.work) { const dp = dropFor(d.prod, door.x, door.y, tm); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.sw = 0; } return; }
+  if (w.st === 0) { w.t += dt; w.x = door.x + Math.sin(S.t*2 + b.id)*.3; w.y = door.y; if (w.t >= d.work) { const dp = dropFor(d.prod, door.x, door.y, tm); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; } }
+  else if (w.st === 1) { const dp = byId.get(w.to); if (!dp) { w.st = 0; w.t = 0; return; } const tx = dp.x + B[dp.k].w/2, ty = dp.y + B[dp.k].h + .2; w.an += dt*8;
+    if (walkLeg(w, tx, ty, dt, tm)) { const g = w.what || d.prod, bank = tm ? S.ai.res : S.res; bank[g] = (bank[g] || 0) + w.carry*(tm ? aiInc() : 1); w.carry = 0; w.st = 2; w.what = null; if (!tm) floatTxt(tx*T, ty*T - 20, '+' + d.amt + ICON[g]); } }
+  else { if (walkLeg(w, door.x, door.y, dt, tm)) { w.st = 0; w.t = 0; } }
+}
+function repairSpot(t, door) { if (t.k === 'keep') return {x:t.x + 1.5, y:t.y + 3.3}; ensureReg(); const d = B[t.k], mine = labelsNear(regP, door.x, door.y); let best = null, bd = 1e9;
+  for (let y = t.y - 1; y <= t.y + d.h; y++) for (let x = t.x - 1; x <= t.x + d.w; x++) { if (!inb(x, y) || (x >= t.x && x < t.x + d.w && y >= t.y && y < t.y + d.h)) continue; if (x !== t.x - 1 && x !== t.x + d.w && y !== t.y - 1 && y !== t.y + d.h) continue;
+    const r = regP[idx(x, y)]; if (!r || (mine.length && !mine.includes(r))) continue; const dd = Math.hypot(x - door.x, y - door.y); if (dd < bd) { bd = dd; best = {x:x + .5, y:y + .5}; } }
+  return best || {x:t.x + .5, y:t.y + .5}; }
 const REPAIR_HP = 30;   // hp per second an engineer restores
 function stepRepairer(b, w, door, dt) {
   if (w.st === 0) { w.x = door.x + Math.sin(S.t*2 + b.id)*.25; w.y = door.y; w.sw = 0;
@@ -555,28 +615,32 @@ function stepRepairer(b, w, door, dt) {
       const dist = Math.hypot(x.x + dx.w/2 - door.x, x.y + dx.h/2 - door.y); if (dist > 34) continue; const sc = dist - (1 - x.hp/dx.hp)*25; if (sc < bs) { bs = sc; best = x; } }
     if (best) { w.tgt = best.id; w.st = 5; } return; }
   if (w.st === 5 || w.st === 6) { const t = byId.get(w.tgt), dt2 = t && B[t.k]; if (!t || t.hp >= dt2.hp) { w.st = 2; w.sw = 0; b.need = null; return; }
-    if (w.st === 5) { const tx = t.k === 'keep' ? t.x + 1.5 : t.x + .5, ty = t.k === 'keep' ? t.y + 3.3 : t.y + .5; w.an += dt*8; if (walkLeg(w, tx, ty, dt)) w.st = 6; return; }
+    if (w.st === 5) { if (!w.spot || w.spotFor !== t.id) { w.spotFor = t.id; w.spot = repairSpot(t, door); } const tx = w.spot.x, ty = w.spot.y; w.an += dt*8; if (walkLeg(w, tx, ty, dt)) w.st = 6; return; }
     const mat = t.k === 'palisade' ? 'wood' : 'stone', need = REPAIR_HP*dt/100;   // 1 stone per 100 hp
     if (S.res[mat] < need) { b.need = mat; w.sw = 0; return; } b.need = null;
     S.res[mat] -= need; t.hp = Math.min(dt2.hp, t.hp + REPAIR_HP*dt); w.t = (w.t || 0) + dt; w.sw = (w.t % .6)/.6;
     const imp = Math.floor(w.t/.6); if (imp !== w.imp) { w.imp = imp; if (particles.length < 250) puff(w.x*T + 8, w.y*T - 6, '#d8c8a8', 1); } return; }
   if (walkLeg(w, door.x, door.y, dt)) { w.st = 0; w.t = 0; }
 }
-const walkPeasant = i => { if (!passT(i)) return false; const o = occ[i]; if (!o) return true; const b = byId.get(o); return !!(b && B[b.k].walk); };
-function walkLeg(w, tx, ty, dt) {   // peasants follow a path around trees, rocks, water and buildings
-  const key = Math.floor(tx) + ',' + Math.floor(ty);
-  if (w.leg !== key) { w.leg = key; const fx = Math.floor(w.x), fy = Math.floor(w.y); const p = inb(fx, fy) ? astar(fx, fy, Math.floor(tx), Math.floor(ty), walkPeasant, N*N) : null;
+const walkPeasant = i => groundOK(i, 0), walkPeasantAI = i => groundOK(i, 1);
+function walkLeg(w, tx, ty, dt, tm = 0) {   // peasants follow a path around trees, rocks, water, buildings and walls (gates let them through)
+  const key = Math.floor(tx) + ',' + Math.floor(ty), wf = tm ? walkPeasantAI : walkPeasant;
+  if (w.leg !== key) { if ((w.wait = (w.wait || 0) - dt) > 0) return false;
+    if (!canReach(tm, w.x, w.y, tx, ty)) { w.blocked = 1; w.wait = 2; return false; }   // walled off: wait (and tell the player) instead of walking through walls
+    w.blocked = 0; w.leg = key; const fx = Math.floor(w.x), fy = Math.floor(w.y); const p = inb(fx, fy) ? astar(fx, fy, Math.floor(tx), Math.floor(ty), wf, N*N) : null;
     if (!p) { w.x = tx; w.y = ty; w.leg = null; return true; }   // no dry route at all: never wade through water or trees, just arrive
     w.path = p; if (w.path.length) w.path.pop(); }
   w.an += dt*8;
-  if (w.path && w.path.length) { const n = w.path[0]; if (moveTo(w, n % N + .5, ((n / N) | 0) + .5, 1.8, dt)) w.path.shift(); return false; }
-  const done = moveTo(w, tx, ty, 1.8, dt); if (done) w.leg = null; return done;
+  if (w.path && w.path.length) { const n = w.path[0]; if (!wf(n)) { w.leg = null; w.path = null; return false; } if (moveTo(w, n % N + .5, ((n / N) | 0) + .5, 1.8, dt)) w.path.shift(); return false; }
+  const ox = w.x, oy = w.y, t0 = idx(Math.floor(ox), Math.floor(oy)), done = moveTo(w, tx, ty, 1.8, dt), t1 = idx(Math.floor(w.x), Math.floor(w.y));
+  if (t1 !== t0 && t1 !== idx(Math.floor(tx), Math.floor(ty)) && !wf(t1)) { w.x = ox; w.y = oy; w.leg = null; return false; }   // something got built in the way
+  if (done) w.leg = null; return done;
 }
 function findTree(b, door, w) {
   const d = B[b.k], R = d.nearR, taken = new Set(); for (const [id, o] of workers) if (o !== w && o.tree != null) taken.add(o.tree);
   let best = -1, bd = 1e9, best2 = -1, bd2 = 1e9;
   for (let y = b.y - R; y < b.y + d.h + R; y++) for (let x = b.x - R; x < b.x + d.w + R; x++) { if (!inb(x, y)) continue; const i = idx(x, y); if (ter[i] !== 1) continue;
-    const dist = Math.hypot(x + .5 - door.x, y + .9 - door.y); if (taken.has(i)) { if (dist < bd2) { bd2 = dist; best2 = i; } } else if (dist < bd) { bd = dist; best = i; } }
+    const dist = Math.hypot(x + .5 - door.x, y + .9 - door.y); if (dist > bd && dist > bd2) continue; if (!canReach(b.tm | 0, door.x, door.y, x + .5, y + .5)) continue; if (taken.has(i)) { if (dist < bd2) { bd2 = dist; best2 = i; } } else if (dist < bd) { bd = dist; best = i; } }
   return best >= 0 ? best : best2;
 }
 const CHOP_SWING = .75;
@@ -585,14 +649,14 @@ function stepChopper(b, d, w, door, dt) {
     if (w.t >= .8) { w.t = 0; const i = findTree(b, door, w); if (i < 0) { b.noTrees = true; w.tree = null; return; } b.noTrees = false; w.tree = i; w.st = 3; } return; }
   const i = w.tree; if (i == null || ter[i] !== 1) { w.st = 0; w.t = .8; w.tree = null; w.sw = 0; return; }
   const sx = i % N + .5 - .42, sy = ((i / N) | 0) + .86;
-  if (w.st === 3) { if (walkLeg(w, sx, sy, dt)) { w.st = 4; w.t = 0; w.fx = 1; } return; }
+  if (w.st === 3) { if (walkLeg(w, sx, sy, dt, b.tm | 0)) { w.st = 4; w.t = 0; w.fx = 1; } return; }
   // st 4: chopping
   w.t += dt; w.fx = 1; w.sw = (w.t % CHOP_SWING)/CHOP_SWING; const imp = Math.floor((w.t + CHOP_SWING*.35)/CHOP_SWING);
   if (imp !== w.imp) { w.imp = imp; shake.set(i, performance.now()); if (particles.length < 250) puff((i % N + .5)*T - 4, ((i / N) | 0)*T + T*.7, '#c8a060', 2); }
   if (w.t >= d.work) {
     const left = (S.tw[i] ?? TREE_WOOD) - d.amt;
-    if (left <= 0) { ter[i] = 4; S.stumps[i] = S.t; delete S.tw[i]; falls.push({i, t0:performance.now()}); flowDirty = true; } else S.tw[i] = left;
-    const dp = dropFor('wood', w.x, w.y); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.sw = 0; w.tree = null;
+    if (left <= 0) { ter[i] = 4; S.stumps[i] = S.t; delete S.tw[i]; falls.push({i, t0:performance.now()}); flowDirty = regDirty = true; } else S.tw[i] = left;
+    const dp = dropFor('wood', w.x, w.y, b.tm | 0); w.to = dp ? dp.id : 0; w.st = 1; w.carry = d.amt; w.sw = 0; w.tree = null;
   }
 }
 const shake = new Map(); let falls = []; let regrowT = 0;
@@ -606,7 +670,8 @@ function step(dt) {
   if (S.mode === 'vs') stepAI(dt);
   stepPits();
   if (S.t >= S.wave.next) spawnWave();
-  for (const u of S.u) { if (u.hp <= 0) continue; if (u.tm === 0) stepPlayerUnit(u, dt); else stepEnemy(u, dt); }
+  for (const u of S.u) { if (u.hp <= 0) continue; const ox = u.x, oy = u.y, t0 = tileOf(u); if (u.tm === 0) stepPlayerUnit(u, dt); else stepEnemy(u, dt);
+    const t1 = tileOf(u); if (t1 !== t0 && !canStep(u, t0, t1)) { u.x = ox; u.y = oy; if (u.gp) u.gp = null; if (u.path && u.path.length) u.path = []; u.nt = -1; } }
   // shooting structures
   for (const b of S.b) { const sh = B[b.k].shoot; if (!sh) continue; b.cd -= dt; if (b.cd > 0) continue;
     const cx = b.x + B[b.k].w/2, cy = b.y + B[b.k].h/2; let tg = null, bd = sh.r;
@@ -620,7 +685,7 @@ function step(dt) {
   for (const st of stones) { st.t += dt; if (st.t >= st.dur) { st.done = true; const b = byId.get(st.bid); puff(st.tx*T, st.ty*T, '#8a8478', 8); if (b) hurtB(b, st.dmg);
     const tm = st.team ?? 1; for (const v of S.u) if (v.tm !== tm && v.hp > 0 && Math.hypot(v.x - st.tx, v.y - st.ty) < .9) hurtU(v, (st.udmg ?? 25)*(UNIT[v.k].armor ?? 1)); } }
   stones = stones.filter(st => !st.done);
-  for (const u of S.u) if (u.dead && u.k === 'stower' && u.dock) { const b = byId.get(u.dock); if (b && b.bridge === u.id) { b.bridge = 0; flowDirty = true; } }
+  for (const u of S.u) if (u.dead && u.k === 'stower' && u.dock) { const b = byId.get(u.dock); if (b && b.bridge === u.id) { b.bridge = 0; flowDirty = regDirty = true; } }
   if (S.u.some(u => u.dead)) { S.u = S.u.filter(u => !u.dead); sel = sel.filter(id => uById(id)); }
   for (const b of S.b) if (b.rise != null) { b.rise += dt*2.5; if (b.rise >= 1) delete b.rise; }
   if (S.wave.active && !S.u.some(u => u.tm === 1) && S.wave.n > 0) {
@@ -754,7 +819,7 @@ function drawBuildingSprite(c, k, x, y, alpha) {
 function drawFigure(c, x, y, k, tm, an, fx, atk, carry, tool, swing) {
   c.save(); c.translate(x, y); const big = k === 'brute' ? 1.7 : 1.2; c.scale((fx || 1)*big, big);
   c.fillStyle = '#0000003a'; c.beginPath(); c.ellipse(0, 0, 5.5, 2.2, 0, 0, 7); c.fill();
-  const bob = Math.sin(an || 0), tun = tm === 1 ? (k === 'brute' ? '#5a1a14' : '#a8322b') : k === 'peasant' ? '#8a6a3e' : '#2f5fa8';
+  const bob = Math.sin(an || 0), tun = tm === 1 ? (k === 'brute' ? '#5a1a14' : k === 'peasant' ? '#8a4a38' : '#a8322b') : k === 'peasant' ? '#8a6a3e' : '#2f5fa8';
   c.strokeStyle = '#2a2018'; c.lineWidth = 2; c.beginPath(); c.moveTo(-2, -5); c.lineTo(-2 + bob*1.5, 0); c.moveTo(2, -5); c.lineTo(2 - bob*1.5, 0); c.stroke();
   c.fillStyle = tun; c.beginPath(); c.roundRect ? c.roundRect(-4.5, -13, 9, 9, 2) : c.rect(-4.5, -13, 9, 9); c.fill();
   if (tm === 0 && k !== 'peasant') { c.fillStyle = '#e7b84a'; c.fillRect(-4.5, -9.5, 9, 1.5); }
@@ -989,6 +1054,7 @@ function renderSheet(force) {
   if (d.craft) { const out = b.out || d.prod; html += `<p>${!b.staffed ? '💤 <b>No worker</b>. Needs an idle peasant (build Hovels)' : b.need === 'armory' ? '🛡 <b>No Armory</b> to deliver to. Build one (Military tab)' : b.need ? '⏳ Waiting for ' + costTxt(d.inp) + ' (not enough ' + b.need + ')' : '🔨 Making ' + ICON[out] + ' ' + GNAME[out] + ' from ' + costTxt(d.inp)}</p><p>In the Armory: ${ICON[out]} ${S.res[out] || 0}</p>`;
     if (d.alt) html += `<div class="row"><button class="btn ${out === d.prod ? 'green' : ''}" data-a="out:${d.prod}">Make swords 🗡</button><button class="btn ${out === d.alt ? 'green' : ''}" data-a="out:${d.alt}">Make maces 🔨</button></div>`; }
   else if (d.repair) html += `<p>${!b.staffed ? '💤 <b>No engineer</b>. Needs an idle peasant (build Hovels)' : b.need ? '⏳ Out of ' + b.need + ' for repairs' : '🔧 Engineer on duty: repairs walls, towers, gates and the keep (1🪨 per 100 hp)'}</p>`;
+  if (d.prod && b.staffed && b.blocked) html += `<p>🚧 <b>Walled in!</b> The worker can't get past your walls. Put a <b>Gatehouse</b> in the wall (Castle tab).</p>`;
   else if (d.prod) html += `<p>${!b.staffed ? '💤 <b>No worker</b>. Needs an idle peasant (build Hovels)' : b.noTrees ? '🪓 <b>No trees left in range.</b> Build a new Woodcutter by a forest.' : '👷 Working: +' + d.amt + ICON[d.prod] + ' per trip'}</p>`;
   if (d.chop) { let n = 0; const R = d.nearR; for (let y = b.y - R; y < b.y + d.h + R; y++) for (let x = b.x - R; x < b.x + d.w + R; x++) if (inb(x, y) && ter[idx(x, y)] === 1) n++; html += `<p>🌲 ${n} trees in reach</p>`; }
   if (b.k === 'armory' || b.k === 'barracks') html += `<div class="arms">${WEAP.map(r => `<span>${ICON[r]} <b>${S.res[r] || 0}</b> ${GNAME[r]}</span>`).join('')}</div>`;
@@ -1067,7 +1133,7 @@ function updateHud() {
   if (S.mode === 'vs') { const A = S.ai, att = S.u.filter(u => u.tm === 1 && !u.guard).length, home = en - att, s = Math.max(0, Math.ceil(A.nextAttack - S.t));
     $('wave-n').textContent = '🚩 Enemy lord'; $('wave-t').textContent = att ? `· ${att} attacking!` : `· army ${home} · attack ~${Math.floor(s/60)}:${String(s % 60).padStart(2, '0')}`;
     wv.classList.toggle('danger', att > 0 || s < 20); const ab = S.b.filter(b => b.tm === 1), ak = aiKeep();
-    $('wave-p').textContent = `Enemy castle: ${ab.filter(b => !B[b.k].line).length} buildings, ${ab.filter(b => B[b.k].line).length} walls · keep ${ak ? Math.round(ak.hp/B.keep.hp*100) : 0}%`;
+    $('wave-p').textContent = `Enemy castle: ${ab.filter(b => !B[b.k].line).length} buildings, ${ab.filter(b => B[b.k].line).length} walls · 👷 ${S.ai.workers || 0} · keep ${ak ? Math.round(ak.hp/B.keep.hp*100) : 0}%`;
     $('army-n').textContent = soldiers().length; if (undo && performance.now() > undo.until) { undo = null; $('btn-undo').classList.add('hidden'); } refreshItems(); if (selB) renderSheet(); return; }
   $('wave-p').textContent = 'Next · Wave ' + (S.wave.n + 1) + ': ' + waveText(S.wave.n + 1);
   if (S.wave.active) { $('wave-n').textContent = 'Wave ' + S.wave.n; $('wave-t').textContent = '· ' + en + ' enemies left'; wv.classList.add('danger'); }
@@ -1102,13 +1168,13 @@ function render(now) {
   for (const b of S.b) { const d = B[b.k]; if (!vis(b.x, b.y) && !vis(b.x + d.w, b.y + d.h)) continue;
     if (d.line || d.gate) dl.push({y:(b.y + 1)*T - 1, f:() => drawWall(c, b.x, b.y, b.k, b.hp/d.hp, b.rise != null ? b.rise : 1, conn)});
     else dl.push({y:(b.y + d.h)*T, f:() => { if (b.k === 'tower') for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) drawWall(c, b.x + i, b.y + j, 'wall', b.hp/d.hp, 1, conn);
-      drawBuildingSprite(c, b.k, b.x, b.y); if (b.tm === 1) pennant(c, (b.x + d.w/2)*T, b.y*T - (b.k === 'keep' ? 40 : 10), '#c8302a'); if (d.prod && !b.tm && (!b.staffed || b.noTrees || b.need)) statusBubble(c, (b.x + d.w/2)*T, b.y*T - 4, !b.staffed ? '💤' : b.noTrees ? '🌲' : b.need === 'armory' ? '🛡' : ICON[b.need], b.staffed); }}); }
-  for (const [id, w] of workers) { const b = byId.get(id); if (!b) continue; dl.push({y:w.y*T, f:() => drawFigure(c, w.x*T, w.y*T, 'peasant', 0, w.st === 4 || w.st === 6 || ((B[b.k].mine || B[b.k].craft) && w.st === 0) ? 0 : w.an, w.st === 2 ? -1 : 1, 0, w.st === 1 ? (w.what || B[b.k].prod) : null, w.st === 4 ? 'axe' : w.st === 6 ? 'hammer' : B[b.k].mine && w.st === 0 ? 'pick' : B[b.k].craft && w.st === 0 && w.has ? (B[b.k].inp.wood ? 'knife' : 'hammer') : null, w.sw || 0)}); }
+      drawBuildingSprite(c, b.k, b.x, b.y); if (b.tm === 1) pennant(c, (b.x + d.w/2)*T, b.y*T - (b.k === 'keep' ? 40 : 10), '#c8302a'); if (d.prod && !b.tm && (!b.staffed || b.noTrees || b.need || b.blocked)) statusBubble(c, (b.x + d.w/2)*T, b.y*T - 4, !b.staffed ? '💤' : b.blocked ? '🚧' : b.noTrees ? '🌲' : b.need === 'armory' ? '🛡' : ICON[b.need], b.staffed); }}); }
+  for (const [id, w] of workers) { const b = byId.get(id); if (!b) continue; dl.push({y:w.y*T, f:() => drawFigure(c, w.x*T, w.y*T, 'peasant', b.tm | 0, w.st === 4 || w.st === 6 || ((B[b.k].mine || B[b.k].craft) && w.st === 0) ? 0 : w.an, w.st === 2 ? -1 : 1, 0, w.st === 1 ? (w.what || B[b.k].prod) : null, w.st === 4 ? 'axe' : w.st === 6 ? 'hammer' : B[b.k].mine && w.st === 0 ? 'pick' : B[b.k].craft && w.st === 0 && w.has ? (B[b.k].inp.wood ? 'knife' : 'hammer') : null, w.sw || 0)}); }
   // idle peasants by the keep
   const nIdle = Math.min(idle(), 10);
   for (let i = 0; i < nIdle; i++) { const a = i/Math.max(1, nIdle)*Math.PI + .2, px = (KX + 1.5 + Math.cos(a)*1.6)*T, py = (KY + 4.3 + Math.sin(a)*.8)*T; dl.push({y:py, f:() => drawFigure(c, px, py, 'peasant', 0, 0, Math.cos(a) > 0 ? -1 : 1)}); }
   dl.push({y:(KY + 4.3)*T, f:() => { const fx = (KX + 1.5)*T, fy = (KY + 4.4)*T; c.fillStyle = '#5a3a20'; c.fillRect(fx - 5, fy - 2, 10, 3); const fl = 3 + Math.sin(now/90)*1.2; c.fillStyle = '#f0a020'; c.beginPath(); c.moveTo(fx - 4, fy - 1); c.quadraticCurveTo(fx, fy - 8 - fl, fx + 4, fy - 1); c.fill(); c.fillStyle = '#ffe070'; c.beginPath(); c.moveTo(fx - 2, fy - 1); c.quadraticCurveTo(fx, fy - 4 - fl*.6, fx + 2, fy - 1); c.fill(); }});
-  for (const u of S.u) { if (!vis(Math.floor(u.x), Math.floor(u.y))) continue; const el = u.tm === 0 && u.el, oy = el ? 18 : 0;
+  for (const u of S.u) { if (!vis(Math.floor(u.x), Math.floor(u.y))) continue; const el = !!u.el, oy = el ? 18 : 0;
     dl.push({y:el ? (Math.floor(u.y) + 1)*T : u.y*T, f:() => { const sx = u.x*T, sy = u.y*T - oy;
       if (sel.includes(u.id)) { c.strokeStyle = '#ffe28a'; c.lineWidth = 1.6; c.beginPath(); c.ellipse(sx, sy, 8, 3.5, 0, 0, 7); c.stroke(); }
       if (UNIT[u.k].siege) { drawSiege(c, sx, sy, u); if (u.tm === 0) pennant(c, sx - 2, sy - 34, '#2f6fd0'); hpBar(c, sx, sy - (u.k === 'stower' ? 58 : 34), 26, u.hp/u.mhp); }
@@ -1232,7 +1298,8 @@ function genVsTerrain(seed) {
   return AX;
 }
 const AIDIFF = {easy:{inc:.65, first:540, every:260, min:5, cap:14, train:12}, normal:{inc:1, first:420, every:200, min:7, cap:22, train:8}, hard:{inc:1.35, first:330, every:160, min:9, cap:30, train:6}};
-const AI_GOALS = [['woodcutter',1],['farm',1],['woodcutter',2],['quarry',1],['hovel',1],['barracks',1],['farm',2],['ring',1],['tower',2],['mine',1],['hovel',2],['farm',3],['gate',1],['tower',4],['woodcutter',3],['hovel',3],['farm',4]];
+const AI_GOALS = [['woodcutter',1],['farm',1],['woodcutter',2],['quarry',1],['hovel',1],['barracks',1],['farm',2],['ring',0],['tower',2],['mine',1],['hovel',2],['farm',3],['tower',4],['woodcutter',3],['hovel',3],['farm',4]];
+const AISCALE = {easy:{f:.7, build:9}, normal:{f:1, build:6}, hard:{f:1.3, build:4}};
 const AI_UNIT_COST = {raider:{gold:10, food:5}, earcher:{gold:14, wood:6}, brute:{gold:28, iron:3}, ram:{wood:50, gold:30}, catapult:{wood:60, stone:30, gold:40}};
 function newVsState(seed, diff = 'normal') {
   S = {v:1, ver:VERSION, seed, mode:'vs', vs:{seed, diff}, t:0, res:{wood:150, stone:80, iron:0, food:80, gold:60, ...START_WEAP}, tw:{}, stumps:{}, pop:6, b:[], u:[], nid:1,
@@ -1242,81 +1309,149 @@ function newVsState(seed, diff = 'normal') {
   addB('keep', KX, KY); addB('stockpile', KX+4, KY+1); addB('granary', KX-3, KY+1);
   for (const [k, x] of [['keep', AX], ['stockpile', AX-3], ['granary', AX+4]]) addB(k, x, KY).tm = 1;
   S.b.find(b => b.tm === 1 && b.k === 'stockpile').y = KY + 1; S.b.find(b => b.tm === 1 && b.k === 'granary').y = KY + 1;
-  reocc(); workers.clear(); projectiles = []; particles = []; stones = []; flowDirty = true;
+  reocc(); workers.clear(); projectiles = []; particles = []; stones = []; flowDirty = regDirty = true;
 }
-function aiRing(ak) { return {x0:ak.x - 7, x1:ak.x + 9, y0:ak.y - 7, y1:ak.y + 9, gx:ak.x - 7, gy:ak.y + 1}; }
+function aiRing(ak, lvl = 0) { return lvl ? {x0:ak.x - 11, x1:ak.x + 9, y0:ak.y - 11, y1:ak.y + 13, gx:ak.x - 11, gy:ak.y + 1, lvl:1} : {x0:ak.x - 7, x1:ak.x + 9, y0:ak.y - 7, y1:ak.y + 9, gx:ak.x - 7, gy:ak.y + 1, lvl:0}; }
+const curRing = ak => { const R = aiRing(ak, S.ai.lvl | 0); if (S.ai.gy && S.ai.gy[R.lvl] != null) R.gy = S.ai.gy[R.lvl]; return R; };
 const wallOk = i => ter[i] === 0 || ter[i] === 1 || ter[i] === 4 || ter[i] === 6;
+const aiInc = () => (AIDIFF[S.vs && S.vs.diff] || AIDIFF.normal).inc;
+const unitNear = (x, y) => S.u.some(u => Math.abs(u.x - x - .5) < 1 && Math.abs(u.y - y - .5) < 1) || [...workers.values()].some(w => Math.abs(w.x - x - .5) < 1 && Math.abs(w.y - y - .5) < 1);
 function aiFits(k, x, y, R, inside) {
-  const d = B[k];
+  const d = B[k], ak = aiKeep(), RO = aiRing(ak, 1), R0 = aiRing(ak, 0);
   for (let j = -1; j <= d.h; j++) for (let i = -1; i <= d.w; i++) { const tx = x + i, ty = y + j; if (!inb(tx, ty) || tx < 1 || ty < 1 || tx > N - 2 || ty > N - 2) return false;
     const foot = i >= 0 && j >= 0 && i < d.w && j < d.h, t = idx(tx, ty);
     if (foot) { const tt = ter[t]; if (d.on ? tt !== d.on : !(tt === 0 || tt === 4 || tt === 6)) return false; if (occ[t] || pitAt(tx, ty)) return false;
-      const inR = tx > R.x0 && tx < R.x1 && ty > R.y0 && ty < R.y1, nearR = tx >= R.x0 - 1 && tx <= R.x1 + 1 && ty >= R.y0 - 1 && ty <= R.y1 + 1;
-      if (inside ? !inR : nearR) return false; if (!inside && tx < N/2 + 1) return false; }
-    else if (occ[t] && !(B[byId.get(occ[t])?.k]?.line)) return false; }
+      const inR = tx > R.x0 + 1 && tx < R.x1 - 1 && ty > R.y0 + 1 && ty < R.y1 - 1, nearR = tx >= RO.x0 - 2 && tx <= RO.x1 + 2 && ty >= RO.y0 - 2 && ty <= RO.y1 + 2;
+      const nearR0 = tx >= R.x0 - 2 && tx <= R.x1 + 2 && ty >= R.y0 - 2 && ty <= R.y1 + 2;   // quarries and mines may sit where the outer wall will run
+      if (inside ? !inR : (d.on ? nearR0 : nearR)) return false; if (!inside && tx < N/2 + 1) return false;
+      if (Math.abs(ty - R.gy) <= 1 && tx < ak.x) return false;   // keep the road from the keep to the gates clear
+      if (inside && R.lvl && tx >= R0.x0 - 1 && tx <= R0.x1 + 1 && ty >= R0.y0 - 1 && ty <= R0.y1 + 1 && !(tx > R0.x0 + 1 && tx < R0.x1 - 1 && ty > R0.y0 + 1 && ty < R0.y1 - 1)) return false; }
+    else if (occ[t]) return false; }   // always leave a walkway round every building
   return true;
 }
 function aiFind(k, ak, R) {
-  const d = B[k], cx = ak.x + 1, cy = ak.y + 1, inside = k === 'barracks' || k === 'hovel'; let best = null, bs = 1e9;
-  for (let y = cy - 24; y <= cy + 24; y++) for (let x = cx - 24; x <= cx + 24; x++) {
+  const d = B[k], cx = ak.x + 1, cy = ak.y + 1, inside = ['barracks','hovel','granary','stockpile','market'].includes(k) && !S.ai.fullIn; let best = null, bs = 1e9;
+  const RR = d.on ? 46 : 30;
+  for (let y = cy - RR; y <= cy + RR; y++) for (let x = cx - RR; x <= cx + RR; x++) {
+    if (d.on && ter[idx(Math.max(0, Math.min(N - 1, x)), Math.max(0, Math.min(N - 1, y)))] !== d.on) continue;
     if (!aiFits(k, x, y, R, inside)) continue; let sc = Math.hypot(x + d.w/2 - cx, y + d.h/2 - cy);
-    if (k === 'woodcutter') { let tr = 0; for (let j = y - 5; j < y + d.h + 5; j++) for (let i = x - 5; i < x + d.w + 5; i++) if (inb(i, j) && ter[idx(i, j)] === 1) tr++; if (tr < 8) continue; sc -= tr*.15; }
-    if (sc < bs) { bs = sc; best = {x, y}; } }
+    if (k === 'woodcutter') { let tr = 0; for (let j = y - 5; j < y + d.h + 5; j++) for (let i = x - 5; i < x + d.w + 5; i++) if (inb(i, j) && ter[idx(i, j)] === 1) tr++; if (tr < 8) continue;
+      let wc = 0; for (const b of S.b) if (b.tm === 1 && b.k === 'woodcutter' && Math.hypot(b.x - x, b.y - y) < 7) wc++; sc -= tr*.15 - wc*6; }
+    if (k === 'farm') sc += Math.abs(y + 1.5 - cy)*.3;
+    if (!canReach(1, ak.x + 1.5, ak.y + 3.5, x + d.w/2, y + d.h + .3)) continue;
+    if (sc < bs && !aiCrowded(k, x, y)) { bs = sc; best = {x, y}; } }
+  if (!best && inside && !S.ai.fullIn) { S.ai.fullIn = 1; return aiFind(k, ak, R); }
   return best;
 }
+function aiCrowded(k, x, y) { for (let j = -1; j <= B[k].h; j++) for (let i = -1; i <= B[k].w; i++) if (unitNear(x + i, y + j)) return true; return false; }
 function aiAdd(k, x, y, R) { const b = addB(k, x, y); b.tm = 1; if (B[k].line || k === 'gate' || k === 'tower') for (let j = 0; j < B[k].h; j++) for (let i = 0; i < B[k].w; i++) clearTree(x + i, y + j);
-  b.rise = 0; reocc(); flowDirty = true; return b; }
+  b.rise = 0; reocc(); flowDirty = regDirty = true; return b; }
 const aiPay = (R, c) => { for (const [k, v] of Object.entries(c)) if ((R[k] || 0) < v) return false; for (const [k, v] of Object.entries(c)) R[k] -= v; return true; };
-function aiBuild(A, R, cnt, ak) {
-  const ring = aiRing(ak);
-  for (const [k, want] of AI_GOALS) {
-    if (A.skip[k]) continue;
-    if (k === 'ring') { const todo = [];
-      for (let y = ring.y0; y <= ring.y1; y++) for (let x = ring.x0; x <= ring.x1; x++) { if (x !== ring.x0 && x !== ring.x1 && y !== ring.y0 && y !== ring.y1) continue; if (x === ring.gx && y === ring.gy) continue;
-        if (!inb(x, y) || occ[idx(x, y)] || !wallOk(idx(x, y))) continue; todo.push({x, y}); }
-      if (!todo.length) continue; todo.sort((a, b) => a.x - b.x || Math.abs(a.y - ring.gy) - Math.abs(b.y - ring.gy));
-      let n = 0; for (const t of todo) { if (n >= 6 || R.stone < 2) break; R.stone -= 2; aiAdd('wall', t.x, t.y, ring); n++; } return; }
-    if (cnt(k) >= want) continue;
-    if (k === 'gate') { const o = bAt(ring.gx, ring.gy); if (o && o.k === 'gate') continue; if (!aiPay(R, {...B.gate.cost})) return; if (o) { S.b = S.b.filter(b => b !== o); reocc(); } if (wallOk(idx(ring.gx, ring.gy))) aiAdd('gate', ring.gx, ring.gy, ring); else A.skip.gate = 1; return; }
-    if (k === 'tower') { const spots = [[ring.x0 + 1, ring.y0 + 1], [ring.x0 + 1, ring.y1 - 2], [ring.x1 - 2, ring.y0 + 1], [ring.x1 - 2, ring.y1 - 2]];
-      const sp = spots.find(([x, y]) => [0,1].every(j => [0,1].every(i => inb(x+i, y+j) && !occ[idx(x+i, y+j)] && wallOk(idx(x+i, y+j)))));
-      if (!sp) { A.skip.tower = 1; continue; } if (!aiPay(R, {...B.tower.cost})) return; aiAdd('tower', sp[0], sp[1], ring); return; }
-    const c = B[k].cost; if (Object.entries(c).some(([r, v]) => (R[r] || 0) < v)) return;   // save up for it
-    const p = aiFind(k, ak, ring); if (!p) { A.skip[k] = 1; continue; }
-    aiPay(R, c); aiAdd(k, p.x, p.y, ring); return;
-  }
+function aiGateSpot(ring) { // a clear spot on the west wall facing the player, as close to the keep's row as possible
+  for (let dy = 0; dy <= 6; dy++) for (const y of [ring.gy + dy, ring.gy - dy]) { const x = ring.gx;
+    if (inb(x - 1, y) && inb(x + 1, y) && wallOk(idx(x, y)) && (passT(idx(x - 1, y)) || ter[idx(x - 1, y)] === 1) && passT(idx(x + 1, y)) && !(occ[idx(x, y)] && byId.get(occ[idx(x, y)])?.tm !== 1)) return y; }
+  return null; }
+function aiRingWork(A, R, ring) {   // gatehouse first so the castle is never sealed, then the walls. 'done' | 'did' | 'wait'
+  A.gy = A.gy || {}; if (A.gy[ring.lvl] == null) { const y = aiGateSpot(ring); A.gy[ring.lvl] = y == null ? ring.gy : y; } ring.gy = A.gy[ring.lvl];
+  const o = bAt(ring.gx, ring.gy);
+  if (!(o && o.k === 'gate')) { if (!aiPay(R, {...B.gate.cost})) return 'wait'; if (o && o.tm === 1 && B[o.k].line) { S.b = S.b.filter(b => b !== o); reocc(); } if (!occ[idx(ring.gx, ring.gy)]) { for (let i = 1; i <= 3; i++) for (const y of [ring.gy - 1, ring.gy, ring.gy + 1]) if (inb(ring.gx - i, y) && !occ[idx(ring.gx - i, y)]) clearTree(ring.gx - i, y); aiAdd('gate', ring.gx, ring.gy, ring); } return 'did'; }
+  const todo = [];
+  for (let y = ring.y0; y <= ring.y1; y++) for (let x = ring.x0; x <= ring.x1; x++) { if (x !== ring.x0 && x !== ring.x1 && y !== ring.y0 && y !== ring.y1) continue;
+    if (!inb(x, y) || occ[idx(x, y)] || !wallOk(idx(x, y)) || unitNear(x, y)) continue; todo.push({x, y}); }
+  if (!todo.length) { if (!A.carved || A.carved !== ring.lvl + 1) { A.carved = ring.lvl + 1; const ak = aiKeep(); if (ak && aiSealed(ak)) aiCarve(ring); } return 'done'; }
+  todo.sort((a, b) => a.x - b.x || Math.abs(a.y - ring.gy) - Math.abs(b.y - ring.gy));
+  let n = 0; for (const t of todo) { if (n >= 6 || R.stone < 2) break; R.stone -= 2; aiAdd('wall', t.x, t.y, ring); n++; }
+  if (n) { const ak = aiKeep(); if (ak && aiSealed(ak)) aiCarve(ring); } return n ? 'did' : 'wait';
 }
+function aiSealed(ak) {   // can the lord's people still get from the keep out to the open map?
+  ensureReg(); const L = labelsNear(regA, ak.x + 1.5, ak.y + 3.5); if (!L.length) return false;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N/2 - 2; x++) { const r = regA[idx(x, y)]; if (r && L.includes(r)) return false; } return true; }
+function aiCarve(ring) {   // walled into a pocket of forest: the lord's men cut a road out through the trees
+  const s = idx(ring.gx, ring.gy), D = new Float32Array(N*N).fill(Infinity), from = new Int32Array(N*N).fill(-1), h = new Heap(); D[s] = 0; h.push(s, 0); let end = -1;
+  while (h.size) { const c = h.pop(), cx = c % N, cy = (c / N) | 0; if (cx < N/2 - 2 && groundOK(c, 1)) { end = c; break; }
+    for (const [dx, dy] of DIRS.slice(0, 4)) { const nx = cx + dx, ny = cy + dy; if (!inb(nx, ny)) continue; const n = idx(nx, ny); if (occ[n] || nx >= ring.gx && n !== s) continue;
+      const t = ter[n], cost = t === 1 ? 4 : passT(n) ? 1 : Infinity; if (cost === Infinity) continue; const nd = D[c] + cost; if (nd < D[n]) { D[n] = nd; from[n] = c; h.push(n, nd); } } }
+  if (end < 0) return false; for (let c = end; c !== s && c >= 0; c = from[c]) if (ter[c] === 1) clearTree(c % N, (c / N) | 0);
+  flowDirty = regDirty = true; return true; }
+function aiTowerSpots(ak) { const out = [];
+  for (let l = 0; l <= (S.ai.lvl | 0); l++) { const r = aiRing(ak, l); out.push([r.x0 + 1, r.y0 + 1], [r.x0 + 1, r.y1 - 2], [r.x1 - 2, r.y0 + 1], [r.x1 - 2, r.y1 - 2]);
+    if (l) out.push([r.x0 + 1, r.gy - 5], [r.x0 + 1, r.gy + 4], [ak.x, r.y0 + 1], [ak.x, r.y1 - 2]); }
+  return out; }
+function aiTower(A, R, ak) { const sp = aiTowerSpots(ak).find(([x, y]) => !(A.badT || []).includes(x + ',' + y) && [0,1].every(j => [0,1].every(i => inb(x+i, y+j) && !occ[idx(x+i, y+j)] && wallOk(idx(x+i, y+j)) && !unitNear(x+i, y+j))));
+  if (!sp) return 'none'; if (!aiPay(R, {...B.tower.cost})) return 'wait'; const nb = aiAdd('tower', sp[0], sp[1], curRing(ak)); if (aiSealed(ak)) { S.b = S.b.filter(b => b !== nb); reocc(); R.stone += B.tower.cost.stone; A.badT = (A.badT || []).concat([sp[0] + ',' + sp[1]]); return 'none'; } return 'did'; }
+function aiPlace(A, R, k, ak) { const c = B[k].cost; if (Object.entries(c).some(([r, v]) => (R[r] || 0) < v)) return 'wait';
+  const p = aiFind(k, ak, curRing(ak)); if (!p) { A.skip[k] = S.t + 60; return 'none'; }
+  aiPay(R, c); const nb = aiAdd(k, p.x, p.y); if (aiSealed(ak)) { S.b = S.b.filter(b => b !== nb); reocc(); for (const [r, v] of Object.entries(c)) R[r] += v; A.skip[k] = S.t + 40; return 'none'; } return 'did'; }
+function aiTargets(A, cnt) {   // after the opening, the lord keeps growing: more of everything over time (faster on Hard)
+  const m = S.t/60*(AISCALE[S.vs.diff] || AISCALE.normal).f, prods = cnt('woodcutter') + cnt('farm') + cnt('quarry') + cnt('mine');
+  return [['hovel', prods + 3 > 8 + 6*cnt('hovel') ? Math.min(10, cnt('hovel') + 1) : 0], ['farm', Math.min(12, 4 + Math.floor(m/1.5))], ['woodcutter', Math.min(8, 3 + Math.floor(m/2.5))],
+    ['ring', (m >= 8 && A.res.stone >= 120) || A.fullIn ? 1 : -1], ['quarry', Math.min(3, 1 + Math.floor(m/4))], ['mine', Math.min(2, 1 + Math.floor(m/6))], ['tower', A.lvl ? 12 : 4],
+    ['granary', cnt('farm') >= 6 ? 2 : 1], ['stockpile', cnt('woodcutter') >= 5 ? 2 : 1], ['market', m >= 5 ? 1 : 0], ['hovel', A.res.wood > 250 ? Math.min(10, cnt('hovel') + 1) : 0]]; }
+function aiBuild(A, R, cnt, ak) {
+  if (!A.open) { for (const [k, want] of AI_GOALS) {   // the opening: a fixed build order, saving up for each step
+      if (k === 'ring') { const r = aiRingWork(A, R, curRing(ak)); if (r === 'done') continue; if (r === 'did') return; A.saving = 1; continue; }   // short of stone: keep building with wood meanwhile
+      if (cnt(k) >= want || (A.skip[k] && A.skip[k] > S.t)) continue; if (A.saving && B[k].cost.stone) continue;
+      const r = k === 'tower' ? aiTower(A, R, ak) : aiPlace(A, R, k, ak); if (r === 'none') continue; return; }
+    if (A.saving) { A.saving = 0; return; } A.open = 1; }
+  if (aiRingWork(A, R, curRing(ak)) === 'did') return;   // finish / patch the wall ring first
+  A.bt = (A.bt || 0) + 1; const pace = (AISCALE[S.vs.diff] || AISCALE.normal).build; if (A.bt < pace) return;
+  for (const [k, want] of aiTargets(A, cnt)) {
+    if (k === 'ring') { if (want < 1 || (A.lvl | 0) >= 1) continue; A.lvl = 1; A.fullIn = 0; A.roleV = (A.roleV | 0) + 1; A.bt = 0; toast('🏰 The enemy lord is building a bigger outer wall', '', 3000); return; }
+    if (cnt(k) >= want || (A.skip[k] && A.skip[k] > S.t)) continue;
+    const r = k === 'tower' ? aiTower(A, R, ak) : aiPlace(A, R, k, ak); if (r === 'did') { A.bt = 0; return; } }
+}
+function aiRoles(A, ak) {   // archers man the towers, half the foot soldiers walk the walls, the rest guard the gate
+  const ring = curRing(ak), g = S.u.filter(u => u.tm === 1 && u.guard && !UNIT[u.k].siege), towers = S.b.filter(b => b.tm === 1 && b.k === 'tower');
+  A.wps = [[ring.x0 + 3, ring.y0 + 3], [ring.x1 - 3, ring.y0 + 3], [ring.x1 - 3, ring.y1 - 3], [ring.x0 + 3, ring.y1 - 3]].map(([x, y]) => ({x:x + .5, y:y + .5}));
+  const manned = new Set(g.filter(u => u.post || u.tw).map(u => u.post || u.tw)); let pat = g.filter(u => u.role === 'patrol').length, gate = g.filter(u => u.role === 'gate').length;
+  for (const u of g) { if (u.role && u.rv === A.roleV) continue; if (u.post) continue; u.rv = A.roleV;
+    if (u.k === 'earcher') { const tw = towers.find(t => !manned.has(t.id) && canReach(1, u.x, u.y, t.x + 1, t.y + 2.5));
+      if (tw) { manned.add(tw.id); u.role = 'post'; u.tw = tw.id; const f = towerFoot(tw, ak); u.hx = f.x; u.hy = f.y; continue; }
+      u.role = 'wall'; u.hx = ring.x0 + 2.5 + Math.random(); u.hy = ring.gy + .5 + (Math.random() - .5)*8; continue; }
+    if (pat <= gate) { u.role = 'patrol'; u.wp = Math.floor(Math.random()*4); pat++; } else { u.role = 'gate'; u.hx = ring.gx + 2.5 + Math.random()*1.5; u.hy = ring.gy + .5 + (Math.random() - .5)*3; gate++; } } }
+function towerFoot(tw, ak) { let best = {x:tw.x + 1, y:tw.y + 2.5}, bd = 1e9; ensureReg(); const home = regA[idx(ak.x + 1, ak.y + 3)];
+  for (let y = tw.y - 1; y <= tw.y + 2; y++) for (let x = tw.x - 1; x <= tw.x + 2; x++) { if (!inb(x, y) || (x >= tw.x && x <= tw.x + 1 && y >= tw.y && y <= tw.y + 1)) continue; const r = regA[idx(x, y)]; if (!r || (home && r !== home)) continue;
+    const dd = Math.hypot(x - ak.x - 1, y - ak.y - 1); if (dd < bd) { bd = dd; best = {x:x + .5, y:y + .5}; } } return best; }
 function aiHome(ak, k) { for (let tries = 0; tries < 20; tries++) { const x = ak.x + 1.5 + (k === 'earcher' ? -4 : 0) + (Math.random() - .5)*(k === 'earcher' ? 3 : 10), y = ak.y + 1.5 + (Math.random() - .5)*10;
     const i = idx(Math.floor(x), Math.floor(y)); if (inb(Math.floor(x), Math.floor(y)) && passT(i) && !occ[i]) return {x, y}; } return {x:ak.x + 1.5, y:ak.y + 3.6}; }
+function aiPopCap() { return 8 + 6*S.b.reduce((n, b) => n + (b.tm === 1 && b.k === 'hovel'), 0); }
+function stepAIWorkers(dt) {   // the lord's peasants really walk out, work and carry the goods home
+  const prods = S.b.filter(b => b.tm === 1 && B[b.k].prod && !B[b.k].craft && !B[b.k].repair).sort((a, b) => a.id - b.id), staffed = Math.min(prods.length, aiPopCap());
+  S.ai.workers = staffed; S.ai.idle = Math.max(0, aiPopCap() - staffed - 2);
+  prods.forEach((b, i) => { const d = B[b.k]; b.staffed = i < staffed; if (!b.staffed) { workers.delete(b.id); return; }
+    let w = workers.get(b.id); const door = {x:b.x + d.w/2, y:b.y + d.h + .3}; if (!w) { w = {st:0, t:Math.random()*2, x:door.x, y:door.y, an:0}; workers.set(b.id, w); }
+    stepWorker(b, d, w, door, dt); b.blocked = !!w.blocked; }); }
 function stepAI(dt) {
   const A = S.ai; A.t += dt; if (A.t < 1) return; const t1 = A.t; A.t = 0;
   const ak = aiKeep(); if (!ak) return;
   const D = AIDIFF[S.vs.diff] || AIDIFF.normal, R = A.res, mine = S.b.filter(b => b.tm === 1), cnt = k => mine.reduce((n, b) => n + (b.k === k), 0);
-  R.wood += (.3 + .8*cnt('woodcutter'))*D.inc*t1; R.stone += (.2 + .6*cnt('quarry'))*D.inc*t1; R.food += (.25 + .8*cnt('farm'))*D.inc*t1;
-  R.gold += (.45 + .15*cnt('hovel'))*D.inc*t1; R.iron += .25*cnt('mine')*D.inc*t1;
+  // a small trickle on top of what the peasants carry home (they deliver most of it)
+  R.wood += (.3 + .3*cnt('woodcutter'))*D.inc*t1; R.stone += (.35 + .25*cnt('quarry'))*D.inc*t1; R.food += (.25 + .3*cnt('farm'))*D.inc*t1;
+  R.gold += (.45 + .15*cnt('hovel') + .3*cnt('market'))*D.inc*t1; R.iron += .1*cnt('mine')*D.inc*t1;
   const army = S.u.filter(u => u.tm === 1); R.food = Math.max(0, R.food - army.length*.03*t1);
   A.alarm = S.u.some(u => u.tm === 0 && Math.hypot(u.x - ak.x - 1.5, u.y - ak.y - 1.5) < 16) ? 1 : 0;
   // the lord's masons patch the most damaged structure
   let dmg = null; for (const b of mine) if (b.hp < B[b.k].hp && (!dmg || b.hp/B[b.k].hp < dmg.hp/B[dmg.k].hp)) dmg = b;
   if (dmg && R.stone >= 1) { const add = Math.min(B[dmg.k].hp - dmg.hp, 35*D.inc*t1); dmg.hp += add; R.stone -= add/100; }
   aiBuild(A, R, cnt, ak);
+  if ((A.rt = (A.rt || 0) - t1) <= 0) { A.rt = 3; aiRoles(A, ak); }
   // train troops at the barracks
   A.trainT += t1; const br = mine.find(b => b.k === 'barracks');
-  if (br && A.trainT >= D.train && army.length < D.cap) {
+  if (br && A.trainT >= D.train && army.length < D.cap + Math.min(Math.floor(D.cap/2), 2*A.attacks)) {
     const pat = ['raider','earcher','raider','brute','earcher','raider'], has = k => army.some(u => u.k === k);
     let k = A.attacks >= 2 && !has('ram') && Math.random() < .5 ? 'ram' : A.attacks >= 3 && !has('catapult') && Math.random() < .5 ? 'catapult' : pat[A.trained % pat.length];
     if (k === 'brute' && !cnt('mine')) k = 'raider';
     if (aiPay(R, AI_UNIT_COST[k])) { A.trainT = 0; A.trained++; const u = addU(k, 1, br.x + 1.5, br.y + 3.4), h = aiHome(ak, k); u.guard = 1; u.hx = h.x; u.hy = h.y; const m = 1 + S.t/1800; u.hp = u.mhp = Math.round(u.hp*m); }
   }
-  // attack!
-  if (S.t >= A.nextAttack) { const g = army.filter(u => u.guard);
-    if (g.length >= D.min) { const size = Math.min(Math.ceil(g.length*.7), (S.vs.diff === 'easy' ? 4 : 6) + A.attacks*(S.vs.diff === 'easy' ? 3 : 4)), go = g.sort((a, b) => (a.k === 'earcher') - (b.k === 'earcher')).slice(0, size); for (const u of go) { u.guard = 0; u.nt = -1; u.edge = 9; }
+  // attack! (tower archers stay at their posts)
+  if (S.t >= A.nextAttack) { const g = army.filter(u => u.guard && !u.post && u.role !== 'post');
+    if (g.length >= D.min) { const size = Math.min(Math.ceil(g.length*.7), (S.vs.diff === 'easy' ? 4 : 6) + A.attacks*(S.vs.diff === 'easy' ? 3 : 4)), go = g.sort((a, b) => (a.k === 'earcher') - (b.k === 'earcher')).slice(0, size); for (const u of go) { u.guard = 0; u.nt = -1; u.edge = 9; u.role = 0; u.gp = null; }
       A.attacks++; A.nextAttack = S.t + D.every; toast('⚔ The enemy lord attacks with ' + go.length + ' troops!', 'bad', 4000); try { navigator.vibrate && navigator.vibrate([60, 40, 60]); } catch (e) {} }
     else A.nextAttack = S.t + 30; }
 }
 // ---------- save / load ----------
 let memSave = null;
-function serialize() { return JSON.stringify({...S, b:S.b.map(({id,k,x,y,hp,out,tm}) => ({id,k,x,y,hp,out,tm})), u:S.u.map(({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid}) => ({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid}))}); }
+function serialize() { return JSON.stringify({...S, b:S.b.map(({id,k,x,y,hp,out,tm}) => ({id,k,x,y,hp,out,tm})), u:S.u.map(({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid,post,tw,role,wp}) => ({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid,post,tw,role,wp}))}); }
 function save() { if (!S || S.over) return; const s = serialize(); memSave = s; try { localStorage.setItem(SAVE_KEY, s); } catch (e) {} }
 function loadSaved() { let s = memSave; try { s = localStorage.getItem(SAVE_KEY) || s; } catch (e) {} if (!s) return null; try { const o = JSON.parse(s); return o && o.v === 1 ? o : null; } catch (e) { return null; } }
 function clearSave() { memSave = null; try { localStorage.removeItem(SAVE_KEY); } catch (e) {} }
@@ -1409,5 +1544,5 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 
 // test hooks
 window.HTK = {get S() { return S; }, makeFling, fling, B, UNIT, step, place, canPlace, commitWall, wallPlan, recruit, orderMove, spawnWave, sendWave, computeFlow, cam, s2w, w2s, newState, start, save, loadSaved, restore,
-  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, newVsState, genVsTerrain, stepAI, aiKeep, orderRaid, get flowP() { return flowP; }, TAX, pitAt, FOFF, get fOff() { return fOff; }, get ghost() { return ghost; }, trade, TRADE, WEAP, renderSheet, get selB() { return selB; }, set selB(v) { selB = v; }, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
+  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, newVsState, genVsTerrain, stepAI, aiKeep, orderRaid, aiFind, aiFits, curRing, canReach, ensureReg, get regP() { return regP; }, get regA() { return regA; }, uRegion, get flowP() { return flowP; }, TAX, pitAt, FOFF, get fOff() { return fOff; }, get ghost() { return ghost; }, trade, TRADE, WEAP, renderSheet, get selB() { return selB; }, set selB(v) { selB = v; }, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
 })();

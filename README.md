@@ -71,3 +71,8 @@ The **Market** buys and sells every good (wood, stone, iron, food and all five w
 
 ## v1.5.1
 - **Momentum panning**: a quick swipe keeps the map gliding and slowing down like an iPhone list (game, Vs Computer and the Map Editor). Touching the map stops it at once; pausing before lifting gives no glide. Placing, wall drawing, box select and pinch zoom are unchanged.
+
+## v1.5.2
+- **Walls really block.** Nobody walks through or over a wall, palisade or tower any more: not your peasants, not your soldiers, not the enemy lord's people. The only way through is your own **Gatehouse** (enemies have to smash a wall or gate). Soldiers can still climb onto their own walls, but only come down on the side they went up.
+- If you wall in a worker with no gate, the building shows 🚧 and a "Walled in" hint, and a toast tells you to add a Gatehouse. Troops ordered somewhere they can't reach go as close as they can.
+- **The enemy lord is busy now.** His peasants really walk out to chop trees, quarry, mine and farm and carry the goods home. He keeps building over the whole game (more farms, woodcutters, quarries, mines, hovels, a second granary and stockpile, a market), always builds the gatehouse first, and later throws a bigger outer wall with more towers around his castle. His archers man the towers, half his soldiers patrol inside the walls and the rest guard the gate. Easy builds slower, Hard faster.

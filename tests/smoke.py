@@ -1,5 +1,5 @@
 """Headless phone-size smoke test for Hold the Keep. Run: python tests/smoke.py [url]"""
-import sys, json, time
+import sys, os, json, time
 from playwright.sync_api import sync_playwright
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8797/"
 SS = "/workspace/castle-game/screenshots/"
@@ -137,7 +137,7 @@ with sync_playwright() as p:
         pg.evaluate("""() => { const H = HTK, r0 = H.KX - 9, r1 = H.KX + 11; H.S.res.stone += 80; H.S.res.gold += 60; H.S.res.wood += 20; H.S.res.bow += 12; H.S.res.spear += 6;
           for (const [a, b, c, d] of [[r0,r0,r1,r0],[r1,r0,r1,r1],[r1,r1,r0,r1],[r0,r1,r0,r0]]) H.commitWall('wall', a, b, c, d);
           for (const b of H.S.b) b.hp = H.B[b.k].hp;
-          H.S.pop = Math.max(H.S.pop, 12); let i = 0; while (H.soldiers().length < 12 && H.idle() > 0 && i++ < 20) H.recruit(H.soldiers().length % 4 === 3 ? 'spear' : 'archer');
+          H.S.pop = Math.max(H.S.pop, 14); let i = 0; while (H.soldiers().length < 14 && H.idle() > 0 && i++ < 20) H.recruit(H.soldiers().length % 3 === 2 ? 'spear' : 'archer');
           const arch = H.soldiers().filter(u => u.k === 'archer'); const sides = [[H.KX+1, r0],[r1, H.KY+1],[H.KX+1, r1],[r0, H.KY+1]];
           sides.forEach((p, j) => H.orderMove(arch.filter((u, k) => k % 4 === j).map(u => u.id), p[0], p[1]));
           for (let s = 0; s < 30*20; s++) H.step(1/30); }""")
@@ -438,6 +438,24 @@ with sync_playwright() as p:
     check(tax == 4 and tg["hi"] > tg["lo"]*1.6, f"keep panel tax levels: High tax brings in ~2x gold {tg}")
     pg.evaluate("() => { HTK.selB = null; HTK.renderSheet(); }")
 
+    # ================= WALLS BLOCK EVERYONE (v1.5.2) =================
+    pg.evaluate("() => { HTK.newState(5150); HTK.start(); HTK.S.tut = 99; HTK.S.wave.next = 1e9; }"); pg.wait_for_timeout(150)
+    wb = pg.evaluate("""() => { const H = HTK, S = H.S, N = H.N; S.res.stone = 999; S.res.wood = 999; S.res.gold = 999; S.pop = 10;
+      const x0 = H.KX + 8, y0 = H.KY - 10, x1 = x0 + 8, y1 = y0 + 8;
+      for (let y = y0 - 3; y <= y1 + 3; y++) for (let x = x0 - 3; x <= x1 + 6; x++) H.ter[H.idx(x, y)] = 0;
+      for (const [a, b, c, d] of [[x0,y0,x1,y0],[x1,y0,x1,y1],[x1,y1,x0,y1],[x0,y1,x0,y0]]) H.commitWall('wall', a, b, c, d);
+      const farm = H.place('farm', x0 + 2, y0 + 2).b; const u = H.addU('spear', 0, x0 + 6.5, y0 + 6.5); u.px = u.x; u.py = u.y;
+      H.orderMove([u.id], x1 + 4, y0 + 4); const food0 = S.res.food; let onWall = 0, outside = 0;
+      for (let i = 0; i < 30*40; i++) { H.step(1/30); if (u.x > x1 + 1 || u.x < x0 || u.y < y0 || u.y > y1 + 1) outside = 1; }
+      H.selB = farm.id; H.renderSheet(true); const sheet = document.getElementById('sheet').innerText;
+      const r1 = {outside, blocked: !!farm.blocked, sheet: sheet.includes('Walled in'), ux: +u.x.toFixed(1)};
+      const g = H.place('gate', x1, y0 + 4); H.orderMove([u.id], x1 + 4, y0 + 4); let viaGate = 0, delivered = 0; const gi = H.idx(x1, y0 + 4);
+      for (let i = 0; i < 30*60; i++) { const w = H.workers.get(farm.id), st0 = w && w.st; H.step(1/30); if (H.idx(Math.floor(u.x), Math.floor(u.y)) === gi) viaGate = 1; const w2 = H.workers.get(farm.id); if (st0 === 1 && w2 && w2.st === 2) delivered++; }
+      return {...r1, gate: g.ok, out2: u.x > x1 + 1, viaGate, blocked2: !!farm.blocked, delivered}; }""")
+    check(not wb["outside"] and wb["blocked"] and wb["sheet"], f"a closed wall ring with no gate keeps soldiers and workers in, and the farm shows a 'Walled in' hint {wb}")
+    check(wb["gate"] and wb["out2"] and wb["viaGate"] and not wb["blocked2"] and wb["delivered"] > 0, f"after a Gatehouse goes in, the soldier walks out through it and the farmer delivers food {wb}")
+    pg.wait_for_timeout(100)
+
     # ================= VS COMPUTER =================
     pg.evaluate("() => { HTK.save(); HTK.stopGame(); HTK.showTitle(); }"); pg.wait_for_timeout(150)
     pg.click("[data-o=vsmenu]"); pg.wait_for_timeout(80); pg.click("[data-o='vs:normal']"); pg.wait_for_timeout(600)
@@ -465,22 +483,33 @@ with sync_playwright() as p:
     pg.reload(); pg.wait_for_selector("[data-o=continue]")
     lbl = pg.inner_text("[data-o=continue]"); pg.click("[data-o=continue]"); pg.wait_for_timeout(500)
     rs = pg.evaluate("() => ({mode: HTK.S.mode, N: HTK.N, ai: HTK.S.b.filter(b => b.tm === 1).length, guards: HTK.S.u.filter(u => u.tm === 1 && u.guard).length})")
-    check("Vs Computer" in lbl and rs["mode"] == "vs" and rs["N"] == 88 and rs["ai"] == nb, f"a Vs Computer game saves and continues ({lbl}) {rs}")
-    pg.evaluate("""() => { const H = HTK, S = H.S, ak = H.aiKeep(); S.tut = 99; for (let i = 0; i < 30; i++) { const u = H.addU(i % 3 === 0 ? 'archer' : i % 3 === 1 ? 'sword' : 'mace', 0, ak.x - 16 + (i % 4), ak.y - 4 + Math.floor(i/4)); u.px = u.x; u.py = u.y; }
-      for (let i = 0; i < 3; i++) { const u = H.addU('catapult', 0, ak.x - 15 + i, ak.y + 6); u.px = u.x; u.py = u.y; }
+    check("Vs Computer" in lbl and rs["mode"] == "vs" and rs["N"] == 88 and nb <= rs["ai"] <= nb + 3, f"a Vs Computer game saves and continues ({lbl}) saved {nb} enemy buildings {rs}")
+    pg.evaluate("""() => { const H = HTK, S = H.S, ak = H.aiKeep(); S.tut = 99; for (let i = 0; i < 40; i++) { const u = H.addU(i % 3 === 0 ? 'archer' : i % 3 === 1 ? 'sword' : 'mace', 0, ak.x - 16 + (i % 4), ak.y - 6 + Math.floor(i/4)); u.px = u.x; u.py = u.y; }
+      for (let i = 0; i < 4; i++) { const u = H.addU('catapult', 0, ak.x - 15 + i, ak.y + 6); u.px = u.x; u.py = u.y; }
       H.cam.x = (ak.x - 6)*H.T; H.cam.y = (ak.y + 1.5)*H.T; H.cam.z = .8; }""")
     pg.wait_for_timeout(150); pg.click("#btn-army"); pg.wait_for_timeout(80)
     tgt = pg.evaluate("() => { const H = HTK, b = H.S.b.find(b => b.tm === 1 && H.B[b.k].line) || H.aiKeep(); return H.w2s((b.x + .5)*H.T, (b.y + .5)*H.T); }")
     pg.mouse.click(tgt["x"], tgt["y"]); pg.wait_for_timeout(100)
     raid = pg.evaluate("() => HTK.soldiers().filter(u => u.raid).length")
     check(raid >= 18, f"tapping an enemy building with the army selected sends them to attack ({raid} raiding)")
-    for _ in range(24):
+    for _ in range(36):
         pg.evaluate("() => { for (let i = 0; i < 30*10 && !HTK.S.won; i++) HTK.step(1/30); }")
         if pg.evaluate("() => !!HTK.S.won"): break
     pg.wait_for_timeout(1300)
     won = pg.evaluate("() => ({won: !!HTK.S.won, ak: !!HTK.aiKeep(), ai: HTK.S.b.filter(b => b.tm === 1).length, t: Math.round(HTK.S.t)})")
     check(won["won"] and not won["ak"] and "Victory" in pg.inner_text("#ov-card"), f"destroying the enemy keep wins the game {won}")
     pg.screenshot(path=SS + "30-vs-victory.png")
+    # a longer Vs game: nobody crosses a wall except through their own gate, the lord keeps building, attacks keep coming
+    vsrc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "vs_sim.js")).read()
+    vs = pg.evaluate(vsrc, {"fresh": True, "seed": 2468, "diff": "normal", "secs": 900, "every": 150, "immortal": True})
+    for row in vs["report"]: print("  lord", row, flush=True)
+    rp = vs["report"]; nb = lambda r: sum(v for k, v in r.items() if k in ("woodcutter","farm","quarry","mine","hovel","granary","stockpile","market","barracks","tower"))
+    check(vs["nviol"] == 0 and vs["gateUsers"] >= 10, f"in a 15-minute Vs game no unit or worker ever walks over a wall; {vs['gateUsers']} used a gate {vs['viol'][:3]}")
+    check(nb(rp[-1]) >= nb(rp[0]) + 15 and rp[-1].get("farm", 0) >= 8 and rp[-1].get("woodcutter", 0) >= 5 and rp[-1].get("workers", 0) >= 15 and rp[-1].get("gate", 0) >= 1, f"the enemy lord keeps building: {nb(rp[0])} -> {nb(rp[-1])} buildings, {rp[-1].get('workers')} workers")
+    check(rp[-1]["attacks"] >= 2 and max(r["posted"] for r in rp) >= 1 and max(r["patrol"] for r in rp) >= 2, f"the lord still attacks ({rp[-1]['attacks']}x), mans towers and patrols")
+    check(vs["stepMs"] < 2.0, f"Vs simulation stays cheap ({vs['stepMs']} ms per step)")
+    pg.evaluate("() => { const H = HTK, ak = H.aiKeep(); H.cam.x = (ak.x - 3)*H.T; H.cam.y = (ak.y + 1)*H.T; H.cam.z = .62; H.S.over = false; document.getElementById('toasts').innerHTML = ''; }"); pg.wait_for_timeout(400)
+    pg.screenshot(path=SS + "31-vs-busy-lord.png")
     pg.evaluate("() => { HTK.newState(4243); HTK.start(); HTK.S.tut = 99; }"); pg.wait_for_timeout(200)
 
     # ================= MAP EDITOR =================
