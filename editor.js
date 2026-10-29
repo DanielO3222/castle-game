@@ -161,6 +161,7 @@ function s2t(sx, sy) { const c = center(); return {x:Math.floor(((sx - c.x)/E.ca
 const hash = (x, y) => { let h = x*374761393 + y*668265263; h = (h ^ (h >>> 13))*1274126177; return ((h ^ (h >>> 16)) >>> 0)/4294967296; };
 function draw() {
   if (!open || !E) return; raf = requestAnimationFrame(draw);
+  { const now = performance.now(), dt = Math.min(.1, flingT ? (now - flingT)/1000 : 0); flingT = now; if (ptrs.size === 0) fling.step(dt, E.cam, E.cam.z, clampZ); else fling.stop(); }
   const DPR = cv.width / innerWidth, z = E.cam.z, c = center(), n = E.n, IMG = G.IMG;
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#1d150e'; ctx.fillRect(0, 0, cv.width, cv.height);
   ctx.setTransform(DPR*z, 0, 0, DPR*z, DPR*(c.x - E.cam.x*z), DPR*(c.y - E.cam.y*z));
@@ -187,29 +188,30 @@ function draw() {
 }
 
 // ---------- input ----------
-const ptrs = new Map(); let gest = null;
-function onDown(e) { if (!open) return; e.preventDefault(); cv.setPointerCapture?.(e.pointerId); ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+const ptrs = new Map(); let gest = null; const fling = G.makeFling(); let flingT = 0;
+function onDown(e) { if (!open) return; e.preventDefault(); fling.stop(); cv.setPointerCapture?.(e.pointerId); ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
   if (ptrs.size === 2) { if (gest && gest.kind === 'paint' && performance.now() - gest.t0 < 300 && gest.undoAt === E.undo.length) { applySnap(E.undo.pop()); }
     const [a, b] = [...ptrs.values()]; gest = {kind:'pinch', d:Math.hypot(a.x - b.x, a.y - b.y), mx:(a.x + b.x)/2, my:(a.y + b.y)/2, z:E.cam.z}; E.hover = null; return; }
   if (ptrs.size > 2) return;
   const t = s2t(e.clientX, e.clientY);
-  if (E.tool === 'pan' || ['keep','spawn','fill'].includes(E.tool)) { gest = {kind:'tap', sx:e.clientX, sy:e.clientY, lx:e.clientX, ly:e.clientY, moved:false}; return; }
+  if (E.tool === 'pan' || ['keep','spawn','fill'].includes(E.tool)) { gest = {kind:'tap', sx:e.clientX, sy:e.clientY, lx:e.clientX, ly:e.clientY, moved:false}; fling.start(); fling.track(e.clientX, e.clientY); return; }
   const off = e.pointerType === 'mouse' ? 0 : 64, tp = s2t(e.clientX, e.clientY - off);   // paint above the finger so the brush stays visible
   pushUndo(); gest = {kind:'paint', t0:performance.now(), lt:tp, undoAt:E.undo.length, last:tp, off}; E.hover = tp; dab(tp.x, tp.y, E.tool); buildBase(); }
 function onMove(e) { if (!open || !ptrs.has(e.pointerId)) return; e.preventDefault(); ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY}); if (!gest) return;
   if (gest.kind === 'pinch' && ptrs.size >= 2) { const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x)/2, my = (a.y + b.y)/2;
     E.cam.x -= (mx - gest.mx)/E.cam.z; E.cam.y -= (my - gest.my)/E.cam.z; gest.mx = mx; gest.my = my; E.cam.z = gest.z*d/Math.max(10, gest.d); clampZ(); return; }
-  if (gest.kind === 'tap') { if (Math.hypot(e.clientX - gest.sx, e.clientY - gest.sy) > 9) gest.moved = true; if (gest.moved) { E.cam.x -= (e.clientX - gest.lx)/E.cam.z; E.cam.y -= (e.clientY - gest.ly)/E.cam.z; clampZ(); } gest.lx = e.clientX; gest.ly = e.clientY; return; }
+  if (gest.kind === 'tap') { if (Math.hypot(e.clientX - gest.sx, e.clientY - gest.sy) > 9) gest.moved = true; if (gest.moved) { E.cam.x -= (e.clientX - gest.lx)/E.cam.z; E.cam.y -= (e.clientY - gest.ly)/E.cam.z; clampZ(); } fling.track(e.clientX, e.clientY); gest.lx = e.clientX; gest.ly = e.clientY; return; }
   if (gest.kind === 'paint') { const t = s2t(e.clientX, e.clientY - gest.off); if (t.x === gest.lt.x && t.y === gest.lt.y) return;
     if (E.tool === 'scatter') { if (Math.hypot(t.x - gest.last.x, t.y - gest.last.y) >= Math.max(2, E.bsize)) { dab(t.x, t.y, 'scatter'); gest.last = t; } }
     else line(gest.lt.x, gest.lt.y, t.x, t.y, (x, y) => dab(x, y, E.tool));
     gest.lt = t; E.hover = t; buildBase(); } }
 function onUp(e) { if (!open || !ptrs.has(e.pointerId)) return; ptrs.delete(e.pointerId);
   if (gest && gest.kind === 'tap' && !gest.moved && E.tool !== 'pan' && ptrs.size === 0) { const t = s2t(e.clientX, e.clientY); tapAt(t.x, t.y); }
+  if (gest && gest.kind === 'tap' && gest.moved && ptrs.size === 0) fling.release();
   if (gest && gest.kind === 'paint') changed();
   if (ptrs.size === 0) { gest = null; E.hover = null; } else if (gest && gest.kind === 'pinch' && ptrs.size === 1) gest = null; }
 cv.addEventListener('pointerdown', onDown); cv.addEventListener('pointermove', onMove); cv.addEventListener('pointerup', onUp); cv.addEventListener('pointercancel', onUp);
-cv.addEventListener('wheel', e => { if (!open) return; e.preventDefault(); E.cam.z *= e.deltaY < 0 ? 1.12 : 1/1.12; clampZ(); }, {passive:false});
+cv.addEventListener('wheel', e => { if (!open) return; e.preventDefault(); fling.stop(); E.cam.z *= e.deltaY < 0 ? 1.12 : 1/1.12; clampZ(); }, {passive:false});
 
 // ---------- UI ----------
 function toast(msg, cls = '') { const d = document.createElement('div'); d.className = 'toast ' + cls; d.textContent = msg; $('toasts').appendChild(d); setTimeout(() => d.remove(), 2600); }

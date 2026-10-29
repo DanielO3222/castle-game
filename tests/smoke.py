@@ -304,6 +304,22 @@ with sync_playwright() as p:
     touch("touchEnd", []); pg.wait_for_timeout(80)
     check(pg.evaluate("() => HTK.cam.x") != cam0[0] and pg.evaluate("() => HTK.sel.length") == 4, "quick drag without holding still pans")
     pg.click("#hint-x"); check(pg.evaluate("() => HTK.sel.length") == 0, "Deselect clears the selection")
+    # ---- inertial (fling) panning ----
+    def swipe(x0, y0, dx, n=6, pause=0):
+        touch("touchStart", [(x0, y0)])
+        for i in range(1, n + 1): touch("touchMove", [(x0 + dx*i, y0)]); pg.wait_for_timeout(16)
+        if pause: pg.wait_for_timeout(pause)
+        touch("touchEnd", [])
+    CTR = "() => { HTK.fling.stop(); HTK.cam.x = HTK.cam.y = HTK.N*16; }"
+    pg.evaluate(CTR); swipe(120, 450, 25); c1 = pg.evaluate("() => HTK.cam.x"); pg.wait_for_timeout(350); c2 = pg.evaluate("() => HTK.cam.x")
+    pg.wait_for_timeout(1500); c3 = pg.evaluate("() => HTK.cam.x"); pg.wait_for_timeout(200); c4 = pg.evaluate("() => HTK.cam.x")
+    check(c2 < c1 - 20 and c3 <= c2 and abs(c4 - c3) < .01 and pg.evaluate("() => !HTK.fling.v"), f"fast swipe keeps gliding then stops ({c1:.0f} -> {c2:.0f} -> {c3:.0f})")
+    pg.evaluate(CTR); swipe(120, 450, 25); pg.wait_for_timeout(60); touch("touchStart", [(200, 450)]); s1 = pg.evaluate("() => HTK.cam.x"); pg.wait_for_timeout(200); s2 = pg.evaluate("() => HTK.cam.x"); touch("touchEnd", []); pg.wait_for_timeout(50)
+    check(abs(s2 - s1) < .01 and pg.evaluate("() => HTK.sel.length") == 0, f"touching the map stops the glide at once ({s1:.0f} vs {s2:.0f})")
+    pg.evaluate(CTR); swipe(120, 450, 25, pause=200); p1 = pg.evaluate("() => HTK.cam.x"); pg.wait_for_timeout(300); p2 = pg.evaluate("() => HTK.cam.x")
+    check(abs(p2 - p1) < .01, "pausing before lifting the finger stops without a glide")
+    pg.evaluate("() => { HTK.fling.stop(); HTK.cam.x = 40; HTK.cam.y = HTK.N*16; }"); swipe(120, 450, 30); pg.wait_for_timeout(500)
+    check(pg.evaluate("() => HTK.cam.x") == 0, "glide is clamped at the map edge")
 
     # ---- siege equipment ----
     RING = """(H) => { const K = H.KX, r0 = K - 7, r1 = K + 9; for (let y = r0 - 14; y <= r1 + 14; y++) for (let x = r0 - 14; x <= r1 + 14; x++) if (x > 0 && y > 0 && x < 63 && y < 63) H.ter[H.idx(x, y)] = 0;
@@ -496,6 +512,12 @@ with sync_playwright() as p:
     touch("touchEnd", []); pg.wait_for_timeout(80)
     z1 = pg.evaluate("() => HTKED.E.cam.z")
     check(z1 > z0*1.3 and pg.evaluate("() => HTKED.E.undo.length") == u1, f"pinch zooms the editor ({z0:.2f} -> {z1:.2f}) without painting")
+    pg.click("[data-tool=pan]"); pg.evaluate("() => { HTKED.E.cam.x = HTKED.E.cam.y = 24*32; }")
+    touch("touchStart", [(100, 400)])
+    for i in range(1, 7): touch("touchMove", [(100 + 25*i, 400)]); pg.wait_for_timeout(16)
+    touch("touchEnd", []); e1 = pg.evaluate("() => HTKED.E.cam.x"); pg.wait_for_timeout(400); e2 = pg.evaluate("() => HTKED.E.cam.x")
+    check(e2 < e1 - 10 and pg.evaluate("() => HTKED.E.undo.length") == u1, f"editor pan glides after a swipe ({e1:.0f} -> {e2:.0f})")
+    pg.wait_for_timeout(1500)
     pg.evaluate("() => { HTKED.E.cam.z = 0; HTKED.E.cam.x = HTKED.E.cam.y = 24*32; }"); pg.wait_for_timeout(50)
     pg.evaluate("() => { const E = HTKED.E; E.cam.z = Math.min(innerWidth/(48*32), 9) * .96; }"); pg.wait_for_timeout(50)
     # a river of water (brush 5) across the whole map cuts the spawn off

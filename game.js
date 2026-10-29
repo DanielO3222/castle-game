@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-const VERSION = '1.5.0';
+const VERSION = '1.5.1';
 const T = 32, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -824,10 +824,26 @@ let drag = null;           // {k, x0,y0,x1,y1}
 let lastFinger = null;
 const FOFF = 72; let fOff = 0;   // touch placement aims this many px above the finger so it isn't hidden
 const pointers = new Map(); let gest = null;
+// ---------- inertial panning (iPhone-style fling) ----------
+// track(): record finger samples while panning; release(): returns screen velocity (px/s) from the last ~100ms, or null if the finger paused;
+// stepFling(): friction decay, frame-rate independent (x0.94 per 16.7ms), stops when slow.
+function makeFling() { const F = {samples:[], v:null,
+  start() { F.v = null; F.samples = []; },
+  track(x, y) { const t = performance.now(); F.samples.push({t, x, y}); while (F.samples.length > 2 && t - F.samples[0].t > 120) F.samples.shift(); },
+  release() { const s = F.samples, now = performance.now(); F.samples = []; if (s.length < 2) return F.v = null;
+    const l = s[s.length - 1]; if (now - l.t > 60) return F.v = null;            // finger paused before lift: no fling
+    let i = 0; while (i < s.length - 2 && l.t - s[i].t > 100) i++; const a = s[i], dt = (l.t - a.t)/1000; if (dt < .008) return F.v = null;
+    let vx = (l.x - a.x)/dt, vy = (l.y - a.y)/dt; const sp = Math.hypot(vx, vy); if (sp < 120) return F.v = null;
+    if (sp > 4000) { vx *= 4000/sp; vy *= 4000/sp; } return F.v = {x:vx, y:vy}; },
+  stop() { F.v = null; },
+  step(dt, cam, z, clamp) { if (!F.v) return false; const k = Math.pow(.94, dt*60); const ox = cam.x, oy = cam.y;
+    cam.x -= F.v.x*dt/z; cam.y -= F.v.y*dt/z; clamp(); if (cam.x === ox) F.v.x = 0; if (cam.y === oy) F.v.y = 0;
+    F.v.x *= k; F.v.y *= k; if (Math.hypot(F.v.x, F.v.y) < 20) F.v = null; return true; } }; return F; }
+const fling = makeFling();
 function tileAtScreen(sx, sy) { const w = s2w(sx, sy); return {x: Math.floor(w.x/T), y: Math.floor(w.y/T)}; }
 function ghostTile(sx, sy) { const d = B[tool], w = s2w(sx, sy); return {x: Math.round(w.x/T - d.w/2), y: Math.round(w.y/T - d.h/2)}; }
 cv.addEventListener('pointerdown', e => {
-  if (!running) return;
+  if (!running) return; fling.stop();
   cv.setPointerCapture(e.pointerId); pointers.set(e.pointerId, {x:e.clientX, y:e.clientY}); hideUndoSoon();
   if (pointers.size === 1) {
     lastFinger = {x:e.clientX, y:e.clientY}; fOff = e.pointerType === 'mouse' ? 0 : FOFF;
@@ -852,16 +868,17 @@ cv.addEventListener('pointermove', e => {
   else if (gest.kind === 'wall') { const t = tileAtScreen(e.clientX, e.clientY - fOff); drag.x1 = t.x; drag.y1 = t.y; }
   else if (gest.kind === 'place') ghost = ghostTile(e.clientX, e.clientY - fOff);
   else if (gest.kind === 'demo') demoAt(e.clientX, e.clientY, gest.hit);
-  else if (gest.kind === 'tap') { if (Math.hypot(e.clientX - gest.sx, e.clientY - gest.sy) > 9) { gest.kind = 'pan'; clearTimeout(gest.timer); } }
+  else if (gest.kind === 'tap') { if (Math.hypot(e.clientX - gest.sx, e.clientY - gest.sy) > 9) { gest.kind = 'pan'; clearTimeout(gest.timer); fling.start(); fling.track(px, py); } }
   else if (gest.kind === 'box') { gest.ex = e.clientX; gest.ey = e.clientY; }
-  if (gest.kind === 'pan' || gest.kind === 'pan2') { cam.x -= (e.clientX - px)/cam.z; cam.y -= (e.clientY - py)/cam.z; clampCam(); }
+  if (gest.kind === 'pan' || gest.kind === 'pan2') { cam.x -= (e.clientX - px)/cam.z; cam.y -= (e.clientY - py)/cam.z; clampCam(); fling.track(e.clientX, e.clientY); }
 });
 function endPointer(e, cancel) {
   if (!running) return;
   if (!pointers.has(e.pointerId)) return; pointers.delete(e.pointerId);
-  if (gest && gest.kind === 'pinch') { gest = pointers.size === 1 ? {kind:'pan2'} : null; ghost = tool && B[tool] && !B[tool].line ? ghost : null; return; }
+  if (gest && gest.kind === 'pinch') { gest = pointers.size === 1 ? {kind:'pan2'} : null; fling.start(); ghost = tool && B[tool] && !B[tool].line ? ghost : null; return; }
   if (pointers.size) return;
   const g = gest; gest = null; lastFinger = null; if (g && g.timer) clearTimeout(g.timer); if (!g || cancel) { drag = null; return; }
+  if (g.kind === 'pan' || g.kind === 'pan2') { fling.release(); return; }
   if (g.kind === 'box') { boxSelect(g.sx, g.sy, g.ex, g.ey); return; }
   if (g.kind === 'wall' && drag) { const r = commitWall(drag.k, drag.x0, drag.y0, drag.x1, drag.y1); if (r.ok) { offerUndo(r.ids, r.cost); tutCheck(); } else if (!(drag.x0 === drag.x1 && drag.y0 === drag.y1 && !r.poor)) { toast(r.why, 'bad'); if (r.cost) flashRes(r.cost); } drag = null; }
   else if (g.kind === 'place' && ghost) { const r = place(tool, ghost.x, ghost.y); if (r.ok) { offerUndo([r.b.id], r.paid); if (r.replaced) toast(B[tool].name + ' built into the wall'); tutCheck(); if (!afford(B[tool].cost)) setTool(null); } else { toast(r.why, 'bad'); if (r.poor) flashRes(B[tool].cost); } }
@@ -869,7 +886,7 @@ function endPointer(e, cancel) {
 }
 cv.addEventListener('pointerup', e => endPointer(e, false));
 cv.addEventListener('pointercancel', e => endPointer(e, true));
-cv.addEventListener('wheel', e => { if (!running) return; e.preventDefault(); const w0 = s2w(e.clientX, e.clientY); cam.z *= Math.exp(-e.deltaY*.0015); clampCam(); cam.x = w0.x - (e.clientX - W/2)/cam.z; cam.y = w0.y - (e.clientY - H/2)/cam.z; clampCam(); }, {passive:false});
+cv.addEventListener('wheel', e => { if (!running) return; e.preventDefault(); fling.stop(); const w0 = s2w(e.clientX, e.clientY); cam.z *= Math.exp(-e.deltaY*.0015); clampCam(); cam.x = w0.x - (e.clientX - W/2)/cam.z; cam.y = w0.y - (e.clientY - H/2)/cam.z; clampCam(); }, {passive:false});
 function hoverMouse(e) { if (e.pointerType === 'mouse' && tool && B[tool] && !B[tool].line) ghost = ghostTile(e.clientX, e.clientY); }
 function demoAt(sx, sy, hit) { const t = tileAtScreen(sx, sy), b = bAt(t.x, t.y); if (b && !hit.has(b.id)) { hit.add(b.id); if (b.tm) toast('That belongs to the enemy. Attack it with soldiers', 'bad'); else if (b.k === 'keep') toast("You can't demolish the Keep", 'bad'); else demolish(b, .5); } }
 function handleTap(sx, sy) {
@@ -1017,7 +1034,7 @@ $('btn-pause').addEventListener('click', () => { paused = !paused; setSpeedLabel
 $('btn-send').addEventListener('click', () => { if (S.wave.active) { toast('Beat this wave first', 'bad'); return; } sendWave(); });
 $('btn-menu').addEventListener('click', () => showMenu());
 $('wave').addEventListener('click', () => toast('Wave ' + (S.wave.n + (S.wave.active ? 0 : 1)) + ': ' + waveText(S.wave.n + (S.wave.active ? 0 : 1))));
-mini.addEventListener('pointerdown', e => { const r = mini.getBoundingClientRect(); cam.x = (e.clientX - r.left)/r.width*N*T; cam.y = (e.clientY - r.top)/r.height*N*T; clampCam(); });
+mini.addEventListener('pointerdown', e => { fling.stop(); const r = mini.getBoundingClientRect(); cam.x = (e.clientX - r.left)/r.width*N*T; cam.y = (e.clientY - r.top)/r.height*N*T; clampCam(); });
 
 // ---------- tutorial ----------
 const TUT = [
@@ -1173,6 +1190,7 @@ function frame(now) {
   const dt = Math.min(.1, (now - last)/1000); last = now;
   if (S && running) {
     if (!paused && !S.over) { acc += dt*SPEEDS[speedIdx]; let n = 0; while (acc >= DT && n++ < 12) { step(DT); acc -= DT; } if (n >= 12) acc = 0; }
+    if (!gest || pointers.size === 0) fling.step(dt, cam, cam.z, clampCam); else fling.stop();
     // edge auto-scroll while drawing walls / placing
     if (lastFinger && gest && (gest.kind === 'wall' || gest.kind === 'place')) { const vr = viewRect(), m = 44, sp = 420*dt/cam.z; let mx = 0, my = 0;
       if (lastFinger.x < m) mx = -1; else if (lastFinger.x > W - m) mx = 1; if (lastFinger.y - fOff < vr.t + m) my = -1; else if (lastFinger.y > vr.b - m) my = 1;
@@ -1365,7 +1383,7 @@ $('overlay').addEventListener('click', e => {
   else if (a === 'newconfirm') overlay(`<h2>Start over?</h2><p>Your current castle will be lost.</p><button class="btn red" data-o="new">Yes, new game</button><button class="btn" data-o="resume">Cancel</button>`);
 });
 function start() {
-  closeOverlay(); buildTerrain(); cam.x = (KX + 1.5)*T; cam.y = (KY + 3)*T; cam.z = Math.min(1.2, Math.max(minZ(), 1.1)); clampCam();
+  closeOverlay(); buildTerrain(); fling.stop(); cam.x = (KX + 1.5)*T; cam.y = (KY + 3)*T; cam.z = Math.min(1.2, Math.max(minZ(), 1.1)); clampCam();
   tool = null; sel = []; selB = null; drag = null; ghost = null; paused = false; speedIdx = 0; setSpeedLabel();
   let tutDone = false; try { tutDone = localStorage.getItem(TUT_KEY) === '1'; } catch (e) {} if ((tutDone || S.mode === 'vs') && S.t < 1) S.tut = TUT.length;
   running = true; renderItems(); updateHint(); renderSheet(); updateHud(); tutCheck(); save();
@@ -1390,6 +1408,6 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 // test hooks
-window.HTK = {get S() { return S; }, B, UNIT, step, place, canPlace, commitWall, wallPlan, recruit, orderMove, spawnWave, sendWave, computeFlow, cam, s2w, w2s, newState, start, save, loadSaved, restore,
+window.HTK = {get S() { return S; }, makeFling, fling, B, UNIT, step, place, canPlace, commitWall, wallPlan, recruit, orderMove, spawnWave, sendWave, computeFlow, cam, s2w, w2s, newState, start, save, loadSaved, restore,
   get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, newVsState, genVsTerrain, stepAI, aiKeep, orderRaid, get flowP() { return flowP; }, TAX, pitAt, FOFF, get fOff() { return fOff; }, get ghost() { return ghost; }, trade, TRADE, WEAP, renderSheet, get selB() { return selB; }, set selB(v) { selB = v; }, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
 })();

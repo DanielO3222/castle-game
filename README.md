@@ -68,3 +68,6 @@ The **Market** buys and sells every good (wood, stone, iron, food and all five w
   - The lord gathers resources, builds farms and woodcutters, a quarry, a mine and hovels, a barracks, a stone wall ring with a gatehouse, and corner towers.
   - He trains raiders, archers and brutes, plus rams and catapults later. His troops defend his castle, and he attacks you every few minutes.
   - Select soldiers and tap any enemy building to storm his castle. Destroy his keep to win.
+
+## v1.5.1
+- **Momentum panning**: a quick swipe keeps the map gliding and slowing down like an iPhone list (game, Vs Computer and the Map Editor). Touching the map stops it at once; pausing before lifting gives no glide. Placing, wall drawing, box select and pinch zoom are unchanged.
