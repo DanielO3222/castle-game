@@ -31,6 +31,7 @@ with sync_playwright() as p:
     sp = pg.evaluate(TILE2SCREEN, [spot["x"] + 0.5, spot["y"] + 0.5])
     cdp = ctx.new_cdp_session(pg)
     def touch(t, pts): cdp.send("Input.dispatchTouchEvent", {"type": t, "touchPoints": [{"x": x, "y": y, "id": i} for i, (x, y) in enumerate(pts)]})
+    sp["y"] += 72  # touches aim 72px above the finger
     touch("touchStart", [(sp["x"] - 30, sp["y"] - 30)])
     for i in range(1, 6): touch("touchMove", [(sp["x"] - 30 + 6*i, sp["y"] - 30 + 6*i)]); pg.wait_for_timeout(16)
     pg.wait_for_timeout(100); pg.screenshot(path=SS + "03-placing.png")
@@ -49,6 +50,7 @@ with sync_playwright() as p:
     y = pg.evaluate("() => HTK.KY - 4"); x0 = pg.evaluate("() => HTK.KX - 3"); x1 = x0 + 9
     a = pg.evaluate(TILE2SCREEN, [x0, y]); c = pg.evaluate(TILE2SCREEN, [x1, y + 1])  # slightly off-line: should snap horizontal
     stone0 = pg.evaluate("() => HTK.S.res.stone")
+    a["y"] += 72; c["y"] += 72
     touch("touchStart", [(a["x"], a["y"])])
     for i in range(1, 13): touch("touchMove", [(a["x"] + (c["x"]-a["x"])*i/12, a["y"] + (c["y"]-a["y"])*i/12)]); pg.wait_for_timeout(16)
     pg.wait_for_timeout(120)
@@ -62,6 +64,7 @@ with sync_playwright() as p:
     pg.evaluate("() => { HTK.S.res.stone = 3; }")
     pg.evaluate("([x,y]) => { HTK.cam.x=(x+5)*HTK.T; HTK.cam.y=(y+2)*HTK.T; HTK.cam.z=1.1; }", [x0, y]); pg.wait_for_timeout(50)
     a = pg.evaluate(TILE2SCREEN, [x0, y + 2]); c = pg.evaluate(TILE2SCREEN, [x1, y + 2])
+    a["y"] += 72; c["y"] += 72
     touch("touchStart", [(a["x"], a["y"])])
     for i in range(1, 9): touch("touchMove", [(a["x"] + (c["x"]-a["x"])*i/8, a["y"])]); pg.wait_for_timeout(16)
     plan = pg.evaluate("() => { const d = HTK.drag; return d && HTK.wallPlan(d.k, d.x0, d.y0, d.x1, d.y1); }")
@@ -275,6 +278,7 @@ with sync_playwright() as p:
     pg.evaluate("() => { const H = HTK, K = H.KX; H.commitWall('wall', K + 9, K - 5, K + 12, K - 5); }")
     pg.evaluate("() => { HTK.cam.x = (HTK.KX + 10.5)*HTK.T; HTK.cam.y = (HTK.KX - 5)*HTK.T; }"); pg.wait_for_timeout(60)
     gp = pg.evaluate(TILE2SCREEN, [pg.evaluate("() => HTK.KX + 10"), pg.evaluate("() => HTK.KX - 6")])
+    gp["y"] += 72
     touch("touchStart", [(gp["x"], gp["y"])]); touch("touchMove", [(gp["x"] + 2, gp["y"] + 2)]); pg.wait_for_timeout(120)
     green = pg.evaluate("() => { const H = HTK; return true; }")
     pg.screenshot(path=SS + "15-tower-into-wall-preview.png"); touch("touchEnd", []); pg.wait_for_timeout(100)
@@ -304,7 +308,7 @@ with sync_playwright() as p:
     # ---- siege equipment ----
     RING = """(H) => { const K = H.KX, r0 = K - 7, r1 = K + 9; for (let y = r0 - 14; y <= r1 + 14; y++) for (let x = r0 - 14; x <= r1 + 14; x++) if (x > 0 && y > 0 && x < 63 && y < 63) H.ter[H.idx(x, y)] = 0;
       H.S.res.stone = 999; for (const [a, b, c, d] of [[r0,r0,r1,r0],[r1,r0,r1,r1],[r1,r1,r0,r1],[r0,r1,r0,r0]]) H.commitWall('wall', a, b, c, d); H.S.wave.active = true; H.S.wave.next = 1e9; return {r0, r1}; }"""
-    for k, wv in (("ram", 5), ("stower", 7), ("catapult", 8)):
+    for k, wv in (("ram", 5), ("stower", 7), ("catapult", 7)):
         check(k in pg.evaluate(f"() => HTK.waveComp({wv}).list") and k not in pg.evaluate(f"() => HTK.waveComp({wv-1}).list") or (k == "ram"), f"{k} first shows up in wave {wv}: " + pg.evaluate(f"() => HTK.waveText({wv})"))
     r = pg.evaluate("""(RING) => { const H = HTK, ring = eval(RING), out = {};
       for (const k of ['ram', 'stower', 'catapult']) { H.newState(5); H.start(); H.S.tut = 99; const {r0, r1} = ring(H); H.computeFlow();
@@ -379,6 +383,90 @@ with sync_playwright() as p:
     check(old == [4, 4, 0, 0, 0], f"older saves without weapons get the starting weapons {old}")
     pg.evaluate("() => { HTK.selB = null; HTK.renderSheet(); }")
 
+    # ================= v1.5: finger offset, engineers, catapults, pits, taxes =================
+    pg.evaluate("() => { HTK.newState(31); HTK.start(); HTK.S.tut = 99; HTK.S.res.stone = 400; HTK.S.res.wood = 400; HTK.S.res.gold = 400; HTK.cam.x = (HTK.KX + 1.5)*HTK.T; HTK.cam.y = (HTK.KY + 7)*HTK.T; HTK.cam.z = 1.1; }")
+    pg.click("#tabs [data-tab=castle]"); pg.click(".it[data-k=tower]"); pg.wait_for_timeout(100)
+    fx, fy = 200, 590
+    touch("touchStart", [(fx, fy)])
+    for i in range(1, 5): touch("touchMove", [(fx + 3*i, fy + 2*i)]); pg.wait_for_timeout(16)
+    pg.wait_for_timeout(120)
+    off = pg.evaluate("([x, y]) => { const H = HTK, g = H.ghost, w = H.s2w(x, y - H.FOFF), f = H.s2w(x, y); return {gx: g.x + 1, gy: g.y + 1, ax: w.x/H.T, ay: w.y/H.T, fy: f.y/H.T, off: H.fOff}; }", [fx + 12, fy + 8])
+    check(off["off"] == 72 and abs(off["gx"] - off["ax"]) <= 1 and abs(off["gy"] - off["ay"]) <= 1 and off["fy"] - off["gy"] > 1.2, f"tower ghost sits ~72px above the finger, centred on the crosshair {off}")
+    pg.screenshot(path=SS + "26-placement-offset.png"); touch("touchEnd", []); pg.wait_for_timeout(100)
+    pg.click(".it[data-k=wall]"); a = {"x": 120, "y": 600}
+    touch("touchStart", [(a["x"], a["y"])])
+    for i in range(1, 10): touch("touchMove", [(a["x"] + 16*i, a["y"])]); pg.wait_for_timeout(16)
+    pg.wait_for_timeout(100)
+    wl = pg.evaluate("([x, y]) => { const H = HTK, d = H.drag, w = H.s2w(x, y - 72); return {y0: d.y0, ty: Math.floor(w.y/H.T)}; }", [a["x"], a["y"]])
+    check(wl["y0"] == wl["ty"], f"wall line starts at the crosshair above the finger {wl}")
+    pg.screenshot(path=SS + "27-wall-offset.png"); touch("touchEnd", []); pg.wait_for_timeout(100); pg.evaluate("() => HTK.setTool(null)")
+    eng = pg.evaluate("""(FINDSRC) => { const H = HTK, find = eval(FINDSRC), S = H.S; S.pop = 12; S.res.food = 400;
+      H.commitWall('wall', H.KX - 4, H.KY - 5, H.KX + 4, H.KY - 5); const w = S.b.filter(b => b.k === 'wall'); w[2].hp = 120; w[5].hp = 300;
+      const s = find(['guild', H.KX + 1, H.KY + 5]); H.place('guild', s.x, s.y); const g = H.bAt(s.x, s.y), st0 = S.res.stone; let seen6 = false;
+      for (let i = 0; i < 30*50; i++) { H.step(1/30); const wk = H.workers.get(g.id); if (wk && wk.st === 6) seen6 = true; }
+      return {hp: [w[2].hp, w[5].hp], stone: +(st0 - S.res.stone).toFixed(1), seen6}; }""", FIND)
+    check(eng["seen6"] and eng["hp"] == [500, 500] and 3 <= eng["stone"] <= 12, f"engineer walks out, hammers both damaged walls back to full for a little stone {eng}")
+    cat = pg.evaluate("""() => { const H = HTK, S = H.S; S.res.gold = 200; S.res.wood = 200; S.res.stone = 200; const r = H.recruit('catapult'); if (!r.ok) return {ok: false, why: r.why};
+      const c = r.u; c.x = H.KX + 1.5; c.y = H.KY + 8.5; c.path = []; const e = H.addU('brute', 1, c.x + 6, c.y); e.hp = e.mhp = 2000; e.edge = 1; let st = 0;
+      for (let i = 0; i < 30*12; i++) { const n = H.stones.length; H.step(1/30); if (H.stones.length > n) st++; e.x = c.x + 6; e.y = c.y; }
+      return {ok: true, k: c.k, tm: c.tm, stones: st, dmg: 2000 - e.hp}; }""")
+    check(cat["ok"] and cat["tm"] == 0 and cat["stones"] >= 2 and cat["dmg"] >= 90, f"Engineer's Guild builds a player catapult that lobs stones at enemies {cat}")
+    pit = pg.evaluate("""() => { const H = HTK, S = H.S; S.u = S.u.filter(u => u.tm === 0); const x = H.KX + 1, y = H.KY - 9; const r = H.place('pit', x, y);
+      const inOcc = !!H.occ[H.idx(x, y)]; const e = H.addU('raider', 1, x + .5, y - 1.5); e.edge = 1; e.hp = e.mhp = 400;
+      for (let i = 0; i < 30*4 && H.pitAt(x, y); i++) { H.step(1/30); e.x = x + .5; e.y = Math.min(y + .5, e.y + .05); }
+      return {placed: r.ok, inOcc, gone: !H.pitAt(x, y), hurt: 400 - e.hp}; }""")
+    check(pit["placed"] and not pit["inOcc"] and pit["gone"] and pit["hurt"] >= 120, f"killing pit is invisible to pathing and springs on the first enemy {pit}")
+    tax = pg.evaluate("""() => { const H = HTK, S = H.S; S.u = S.u.filter(u => u.tm === 0); const k = S.b.find(b => b.k === 'keep'); H.selB = k.id; H.renderSheet(true); return document.querySelectorAll('#sheet [data-a^=tax]').length; }""")
+    pg.click("#sheet [data-a='tax:2']"); pg.wait_for_timeout(50)
+    tg = pg.evaluate("() => { const H = HTK, S = H.S; S.pop = 10; const g0 = S.res.gold; for (let i = 0; i < 30*10; i++) H.step(1/30); const hi = S.res.gold - g0; S.tax = 1; const g1 = S.res.gold; for (let i = 0; i < 30*10; i++) H.step(1/30); return {hi, lo: S.res.gold - g1}; }")
+    check(tax == 4 and tg["hi"] > tg["lo"]*1.6, f"keep panel tax levels: High tax brings in ~2x gold {tg}")
+    pg.evaluate("() => { HTK.selB = null; HTK.renderSheet(); }")
+
+    # ================= VS COMPUTER =================
+    pg.evaluate("() => { HTK.save(); HTK.stopGame(); HTK.showTitle(); }"); pg.wait_for_timeout(150)
+    pg.click("[data-o=vsmenu]"); pg.wait_for_timeout(80); pg.click("[data-o='vs:normal']"); pg.wait_for_timeout(600)
+    v0 = pg.evaluate("() => { const H = HTK, ak = H.aiKeep(); return {mode: H.S.mode, N: H.N, ak: ak && [ak.x, ak.y], kx: H.KX, ai: H.S.b.filter(b => b.tm === 1).length, mine: H.S.b.filter(b => !b.tm).length, send: document.getElementById('btn-send').classList.contains('hidden'), hud: document.getElementById('wave').textContent}; }")
+    check(v0["mode"] == "vs" and v0["N"] == 88 and v0["ak"] and v0["ak"][0] > 70 and v0["kx"] < 15 and v0["ai"] == 3 and v0["mine"] == 3 and v0["send"] and "Enemy lord" in v0["hud"], f"Vs Computer starts: 88x88 map, you west, enemy lord east {v0}")
+    pg.screenshot(path=SS + "28-vs-start.png")
+    t0 = time.time()
+    sim = pg.evaluate("""() => { const H = HTK, S = H.S; let firstAttack = 0, ms = 0, n = 0;
+      for (let sec = 0; sec < 560; sec++) { const a = performance.now(); for (let i = 0; i < 30; i++) H.step(1/30); ms += performance.now() - a; n += 30;
+        if (!firstAttack && S.u.some(u => u.tm === 1 && !u.guard)) firstAttack = S.t; if (S.over) break; }
+      const ab = S.b.filter(b => b.tm === 1), cnt = k => ab.filter(b => b.k === k).length;
+      return {t: Math.round(S.t), wc: cnt('woodcutter'), farm: cnt('farm'), quarry: cnt('quarry'), hovel: cnt('hovel'), barracks: cnt('barracks'), walls: cnt('wall'), gate: cnt('gate'), towers: cnt('tower'), mineB: cnt('mine'),
+        army: S.u.filter(u => u.tm === 1).length, attacks: S.ai.attacks, firstAttack: Math.round(firstAttack), stepMs: +(ms/n).toFixed(3), over: S.over}; }""")
+    print("vs sim", sim, "wall s", round(time.time() - t0, 1), flush=True)
+    check(sim["wc"] >= 2 and sim["farm"] >= 2 and sim["barracks"] == 1 and sim["walls"] >= 30 and sim["towers"] >= 2, f"AI lord builds economy, barracks, a wall ring and towers {sim}")
+    check(sim["attacks"] >= 1 and sim["firstAttack"] > 0, f"AI trains an army and attacks (first attack at {sim['firstAttack']} s)")
+    check(sim["stepMs"] < 2.0, f"simulation stays cheap on the big map ({sim['stepMs']} ms per 1/30 s step on this box)")
+    hit = pg.evaluate("""() => { const H = HTK, S = H.S; for (let i = 0; i < 30*90 && !S.over; i++) H.step(1/30); const mineB = S.b.filter(b => !b.tm), k = S.b.find(b => b.k === 'keep' && !b.tm);
+      return {damaged: mineB.filter(b => b.hp < H.B[b.k].hp).length, n: mineB.length, keep: k ? Math.round(k.hp) : 0, over: S.over}; }""")
+    check(hit["damaged"] >= 1 or hit["n"] < 3 or hit["over"], f"the enemy attack reaches your castle and damages it {hit}")
+    pg.evaluate("() => { const H = HTK, ak = H.aiKeep(); H.cam.x = (ak.x + 1.5)*H.T; H.cam.y = (ak.y + 2)*H.T; H.cam.z = .7; }"); pg.wait_for_timeout(250)
+    pg.screenshot(path=SS + "29-vs-enemy-castle.png")
+    pg.evaluate("() => { const S = HTK.S; S.over = false; const k = S.b.find(b => b.k === 'keep' && !b.tm); if (k) k.hp = 3000; HTK.save(); }")
+    nb = pg.evaluate("() => HTK.S.b.filter(b => b.tm === 1).length")
+    pg.reload(); pg.wait_for_selector("[data-o=continue]")
+    lbl = pg.inner_text("[data-o=continue]"); pg.click("[data-o=continue]"); pg.wait_for_timeout(500)
+    rs = pg.evaluate("() => ({mode: HTK.S.mode, N: HTK.N, ai: HTK.S.b.filter(b => b.tm === 1).length, guards: HTK.S.u.filter(u => u.tm === 1 && u.guard).length})")
+    check("Vs Computer" in lbl and rs["mode"] == "vs" and rs["N"] == 88 and rs["ai"] == nb, f"a Vs Computer game saves and continues ({lbl}) {rs}")
+    pg.evaluate("""() => { const H = HTK, S = H.S, ak = H.aiKeep(); S.tut = 99; for (let i = 0; i < 30; i++) { const u = H.addU(i % 3 === 0 ? 'archer' : i % 3 === 1 ? 'sword' : 'mace', 0, ak.x - 16 + (i % 4), ak.y - 4 + Math.floor(i/4)); u.px = u.x; u.py = u.y; }
+      for (let i = 0; i < 3; i++) { const u = H.addU('catapult', 0, ak.x - 15 + i, ak.y + 6); u.px = u.x; u.py = u.y; }
+      H.cam.x = (ak.x - 6)*H.T; H.cam.y = (ak.y + 1.5)*H.T; H.cam.z = .8; }""")
+    pg.wait_for_timeout(150); pg.click("#btn-army"); pg.wait_for_timeout(80)
+    tgt = pg.evaluate("() => { const H = HTK, b = H.S.b.find(b => b.tm === 1 && H.B[b.k].line) || H.aiKeep(); return H.w2s((b.x + .5)*H.T, (b.y + .5)*H.T); }")
+    pg.mouse.click(tgt["x"], tgt["y"]); pg.wait_for_timeout(100)
+    raid = pg.evaluate("() => HTK.soldiers().filter(u => u.raid).length")
+    check(raid >= 18, f"tapping an enemy building with the army selected sends them to attack ({raid} raiding)")
+    for _ in range(24):
+        pg.evaluate("() => { for (let i = 0; i < 30*10 && !HTK.S.won; i++) HTK.step(1/30); }")
+        if pg.evaluate("() => !!HTK.S.won"): break
+    pg.wait_for_timeout(1300)
+    won = pg.evaluate("() => ({won: !!HTK.S.won, ak: !!HTK.aiKeep(), ai: HTK.S.b.filter(b => b.tm === 1).length, t: Math.round(HTK.S.t)})")
+    check(won["won"] and not won["ak"] and "Victory" in pg.inner_text("#ov-card"), f"destroying the enemy keep wins the game {won}")
+    pg.screenshot(path=SS + "30-vs-victory.png")
+    pg.evaluate("() => { HTK.newState(4243); HTK.start(); HTK.S.tut = 99; }"); pg.wait_for_timeout(200)
+
     # ================= MAP EDITOR =================
     ET2S = """([x,y]) => { const E = HTKED.E, t = document.getElementById('ed-top').getBoundingClientRect(), b = document.getElementById('ed-bottom').getBoundingClientRect();
       const cx = innerWidth/2, cy = (t.bottom + b.top)/2; return {x: cx + ((x+.5)*32 - E.cam.x)*E.cam.z, y: cy + ((y+.5)*32 - E.cam.y)*E.cam.z}; }"""
@@ -394,6 +482,7 @@ with sync_playwright() as p:
     # paint trees with a real finger drag (brush 3)
     pg.click("[data-tool=trees]"); pg.click("[data-bs='3']")
     a = pg.evaluate(ET2S, [6, 36]); c = pg.evaluate(ET2S, [18, 40])
+    a["y"] += 64; c["y"] += 64  # editor brush paints above the finger
     touch("touchStart", [(a["x"], a["y"])])
     for i in range(1, 15): touch("touchMove", [(a["x"] + (c["x"]-a["x"])*i/14, a["y"] + (c["y"]-a["y"])*i/14)]); pg.wait_for_timeout(16)
     touch("touchEnd", []); pg.wait_for_timeout(100)
@@ -413,6 +502,7 @@ with sync_playwright() as p:
     check(pg.evaluate("() => HTKED.validate({size:48, ter:HTKED.E.ter, keep:HTKED.E.keep, spawns:HTKED.E.spawns}).ok"), "blank map with keep + spawn is valid")
     pg.click("[data-tool=water]"); pg.click("[data-bs='5']")
     a = pg.evaluate(ET2S, [-1, 9]); c = pg.evaluate(ET2S, [48, 9])
+    a["y"] += 64; c["y"] += 64
     touch("touchStart", [(max(1, a["x"]), a["y"])])
     for i in range(1, 25): touch("touchMove", [(max(1, a["x"]) + (min(389, c["x"]) - max(1, a["x"]))*i/24, a["y"])]); pg.wait_for_timeout(12)
     touch("touchEnd", []); pg.wait_for_timeout(150)

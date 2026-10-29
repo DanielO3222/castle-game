@@ -194,12 +194,13 @@ function onDown(e) { if (!open) return; e.preventDefault(); cv.setPointerCapture
   if (ptrs.size > 2) return;
   const t = s2t(e.clientX, e.clientY);
   if (E.tool === 'pan' || ['keep','spawn','fill'].includes(E.tool)) { gest = {kind:'tap', sx:e.clientX, sy:e.clientY, lx:e.clientX, ly:e.clientY, moved:false}; return; }
-  pushUndo(); gest = {kind:'paint', t0:performance.now(), lt:t, undoAt:E.undo.length, last:t}; E.hover = t; dab(t.x, t.y, E.tool); buildBase(); }
+  const off = e.pointerType === 'mouse' ? 0 : 64, tp = s2t(e.clientX, e.clientY - off);   // paint above the finger so the brush stays visible
+  pushUndo(); gest = {kind:'paint', t0:performance.now(), lt:tp, undoAt:E.undo.length, last:tp, off}; E.hover = tp; dab(tp.x, tp.y, E.tool); buildBase(); }
 function onMove(e) { if (!open || !ptrs.has(e.pointerId)) return; e.preventDefault(); ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY}); if (!gest) return;
   if (gest.kind === 'pinch' && ptrs.size >= 2) { const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x)/2, my = (a.y + b.y)/2;
     E.cam.x -= (mx - gest.mx)/E.cam.z; E.cam.y -= (my - gest.my)/E.cam.z; gest.mx = mx; gest.my = my; E.cam.z = gest.z*d/Math.max(10, gest.d); clampZ(); return; }
   if (gest.kind === 'tap') { if (Math.hypot(e.clientX - gest.sx, e.clientY - gest.sy) > 9) gest.moved = true; if (gest.moved) { E.cam.x -= (e.clientX - gest.lx)/E.cam.z; E.cam.y -= (e.clientY - gest.ly)/E.cam.z; clampZ(); } gest.lx = e.clientX; gest.ly = e.clientY; return; }
-  if (gest.kind === 'paint') { const t = s2t(e.clientX, e.clientY); if (t.x === gest.lt.x && t.y === gest.lt.y) return;
+  if (gest.kind === 'paint') { const t = s2t(e.clientX, e.clientY - gest.off); if (t.x === gest.lt.x && t.y === gest.lt.y) return;
     if (E.tool === 'scatter') { if (Math.hypot(t.x - gest.last.x, t.y - gest.last.y) >= Math.max(2, E.bsize)) { dab(t.x, t.y, 'scatter'); gest.last = t; } }
     else line(gest.lt.x, gest.lt.y, t.x, t.y, (x, y) => dab(x, y, E.tool));
     gest.lt = t; E.hover = t; buildBase(); } }

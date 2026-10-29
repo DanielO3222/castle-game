@@ -54,3 +54,17 @@ Recruiting at the Barracks costs a weapon plus gold and one peasant:
 A new game starts with 4 bows and 4 spears. The ⚔ chip in the top bar shows your weapon total. Tap it for the breakdown.
 
 The **Market** buys and sells every good (wood, stone, iron, food and all five weapons), and the sell price is always lower than the buy price.
+
+## v1.5.0
+- **Placement aims above your finger.** When you drag a building or tower, or draw a wall, the preview sits about 72 px above your finger, with a crosshair on the exact spot. The map editor brush works the same way.
+- **Engineer's Guild.**
+  - Its engineer walks to damaged walls, towers, gates and the keep and hammers them back to full. Repairs cost 1 stone per 100 hp (wood for palisades).
+  - The guild also builds player **Catapults** (50🪙 40🪵 20🪨).
+- **Enemy catapults** now arrive from wave 7. They stop at range and lob stones in a visible arc at your walls and towers.
+- **Killing Pits** (6🪵). Enemies can't see them. The first enemy to step in takes 120 damage (siege engines take 60), and the pit is used up.
+- **Taxes** (tap the Keep). Four levels, None, Low, High and Harsh, trade gold against how fast peasants move in.
+- **⚔ Vs Computer** (Easy, Normal or Hard).
+  - An 88×88 mirrored map with you in the west and an AI lord in the east.
+  - The lord gathers resources, builds farms and woodcutters, a quarry, a mine and hovels, a barracks, a stone wall ring with a gatehouse, and corner towers.
+  - He trains raiders, archers and brutes, plus rams and catapults later. His troops defend his castle, and he attacks you every few minutes.
+  - Select soldiers and tap any enemy building to storm his castle. Destroy his keep to win.
