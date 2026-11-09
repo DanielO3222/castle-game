@@ -521,12 +521,29 @@ with sync_playwright() as p:
       for (const type of Object.keys(H.VS_TYPES)) { H.newVsState(100 + type.length, {enemies:1, size:'small', type, diff:'easy'}); H.start(); H.S.tut=99;
         out[type] = {N:H.N, keep:!!H.aiKeep(), water:[...H.ter].filter(v=>v===3).length, trees:[...H.ter].filter(v=>v===1).length}; }
       H.newVsState(55, {enemies:3, size:'medium', type:'plains', diff:'normal'}); H.start(); H.S.tut=99;
+      const aks0 = H.aiKeeps().map(k => ({tm:k.tm, x:k.x, y:k.y}));
+      const xs = [...new Set(aks0.map(k => k.x))], ys = [...new Set(aks0.map(k => k.y))];
+      const faces = H.S.ais.map(A => A.face);
+      const k2 = H.aiKeeps().find(k => k.tm === 2) || H.aiKeeps()[1];
+      const u = H.addU('sword', 0, H.KX + 5, H.KY + 2); u.px=u.x; u.py=u.y;
+      H.orderRaid([u.id], k2.tm);
+      for (let i=0;i<5;i++) H.step(1/30);
+      const rt = H.raidTargetKeep();
+      const hardFirst = (() => { H.newVsState(9,{enemies:1,size:'small',type:'plains',diff:'hard'}); return Math.round(H.S.ais[0].nextAttack); })();
+      H.newVsState(55, {enemies:3, size:'medium', type:'plains', diff:'normal'}); H.start(); H.S.tut=99;
       for (let i=0;i<30*90;i++) H.step(1/30);
       const lords = {}; for (const b of H.S.b.filter(b=>b.tm)) { const t=lords[b.tm]=lords[b.tm]||{gate:0,farm:0,wc:0}; if(b.k==='gate')t.gate++; if(b.k==='farm')t.farm++; if(b.k==='woodcutter')t.wc++; }
-      return {types:out, keeps:H.aiKeeps().length, lords, prefs:H.loadVsPrefs()}; }""")
+      const gateWalk = {};
+      for (const g of H.S.b.filter(b => b.k === 'gate' && b.tm)) {
+        const ak = H.aiKeep(g.tm); gateWalk[g.tm] = !!(ak && H.canReach(g.tm, ak.x+1.5, ak.y+3.5, g.x+.5, g.y+.5)); }
+      return {types:out, keeps:H.aiKeeps().length, lords, prefs:H.loadVsPrefs(), spread:{xs, ys, faces}, gateWalk, raidTm:rt&&rt.tm, wantTm:k2.tm, hardFirst}; }""")
     check(all(multi["types"][k]["keep"] for k in ("plains","forest","lakes","mountain","coast")), f"each map type places keeps {multi['types']}")
     check(multi["types"]["lakes"]["water"] > 20 and multi["types"]["forest"]["trees"] > multi["types"]["plains"]["trees"], f"lakes have water and forest is woodier { {k: (multi['types'][k]['water'], multi['types'][k]['trees']) for k in multi['types']} }")
     check(multi["keeps"] == 3 and all(v.get("gate",0) >= 1 for v in multi["lords"].values()), f"3 enemy lords each build a gate {multi['lords']}")
+    check(len(multi["spread"]["xs"]) >= 2 and len(multi["spread"]["ys"]) >= 2 and "N" in multi["spread"]["faces"] and "S" in multi["spread"]["faces"], f"3 AIs spread across sides {multi['spread']}")
+    check(multi["raidTm"] == multi["wantTm"], f"raid flow targets the tapped lord {multi['raidTm']} vs {multi['wantTm']}")
+    check(multi["hardFirst"] <= 180, f"Hard first attack is early ({multi['hardFirst']}s)")
+    check(all(multi["gateWalk"].get(t) or multi["gateWalk"].get(str(t)) for t in (1, 2, 3)), f"each lord can path to own gate {multi['gateWalk']}")
     pg.evaluate("() => { const H=HTK, aks=H.aiKeeps(); H.cam.x=(aks[0].x+aks[1].x)/2*H.T; H.cam.y=(aks[0].y+aks[1].y)/2*H.T; H.cam.z=.35; document.getElementById('toasts').innerHTML=''; }")
     pg.wait_for_timeout(300); pg.screenshot(path=SS + "32-vs-setup-multilord.png")
     pg.evaluate("() => { HTK.newState(4243); HTK.start(); HTK.S.tut = 99; }"); pg.wait_for_timeout(200)

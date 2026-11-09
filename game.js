@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-const VERSION = '1.5.3';
+const VERSION = '1.5.4';
 const T = 32, SAVE_KEY = 'htk-save-v1', TUT_KEY = 'htk-tut-done';
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
@@ -277,7 +277,12 @@ const DIRS = [[1,0,1],[-1,0,1],[0,1,1],[0,-1,1],[1,1,1.414],[1,-1,1.414],[-1,1,1
 function enterCost(i) {
   if (!passT(i)) return Infinity;
   let c = ter[i] === 7 ? 1.6 : 1; const o = occ[i];
-  if (o) { const b = byId.get(o); if (b.tm) return b.k === 'gate' ? 1.2 : Infinity; if (b.k === 'keep') return 0; if (b.bridge) return 1; c += B[b.k].hp / 25; }
+  if (o) { const b = byId.get(o);
+    if (b.tm) {   // other lords' walls are smashable so multi-AI attackers don't soft-lock on each other
+      if (b.k === 'gate') return 1.2;
+      if (B[b.k].line || b.k === 'tower') return Math.max(4, B[b.k].hp / 25);
+      return Infinity; }
+    if (b.k === 'keep') return 0; if (b.bridge) return 1; c += B[b.k].hp / 25; }
   return c;
 }
 // cost for the player's soldiers marching on the enemy lord's castle (Vs Computer)
@@ -288,9 +293,23 @@ function enterCostP(i) {
   return c;
 }
 const openE = i => passT(i) && !occ[i];
+function raidTargetKeep() {
+  if (!S || S.mode !== 'vs') return null;
+  const keeps = aiKeeps(); if (!keeps.length) return null;
+  // prefer the keep a raiding squad was ordered against
+  const raiders = S.u.filter(u => u.tm === 0 && u.raid && u.raidTm);
+  if (raiders.length) { const k = aiKeep(raiders[0].raidTm); if (k) return k; }
+  // else nearest enemy keep to the average raider / player keep
+  const pts = S.u.filter(u => u.tm === 0 && u.raid);
+  const ax = pts.length ? pts.reduce((s, u) => s + u.x, 0) / pts.length : KX + 1.5;
+  const ay = pts.length ? pts.reduce((s, u) => s + u.y, 0) / pts.length : KY + 1.5;
+  let best = keeps[0], bd = 1e9;
+  for (const k of keeps) { const d = Math.hypot(k.x + 1.5 - ax, k.y + 1.5 - ay); if (d < bd) { bd = d; best = k; } }
+  return best;
+}
 function computeFlow() {
   fieldFrom(flow, KX, KY, enterCost);
-  const ak = S && S.mode === 'vs' && aiKeep(); if (ak) fieldFrom(flowP, ak.x, ak.y, enterCostP);
+  const ak = S && S.mode === 'vs' && raidTargetKeep(); if (ak) fieldFrom(flowP, ak.x, ak.y, enterCostP);
   flowDirty = false;
 }
 function fieldFrom(F, kx, ky, EC) {
@@ -392,7 +411,7 @@ function stepPlayerUnit(u, dt) {
     if (moveTo(u, n % N + .5 + (u.path.length === 1 ? u.jx*.6 : 0), ((n / N) | 0) + .5 + (u.path.length === 1 ? u.jy*.6 : 0), d.spd, dt)) u.path.shift(); }
   if (u.k === 'catapult') { stepPlayerCatapult(u, d, dt); return; }
   if (u.raid && !u.path.length) {
-    if (!aiKeep()) u.raid = 0;
+    if (!raidTargetKeep()) u.raid = 0;
     else { const foe = nearestEnemyOf(u, u.k === 'archer' ? d.range : 2.4);
       if (foe) { const dd = Math.hypot(foe.x - u.x, foe.y - u.y);
         if (u.k === 'archer') { if (u.cd <= 0) { shoot(u.x, u.y, foe, d.dmg, 0, 12); u.cd = d.cd; u.fx = foe.x < u.x ? -1 : 1; } }
@@ -423,7 +442,7 @@ function stepPlayerCatapult(u, d, dt) {
   if ((u.scan = (u.scan || 0) - dt) <= 0) { u.scan = 1; u.tgB = 0; u.tgU = 0; let bd = d.range;
     for (const b of S.b) if (b.tm) { const dd = Math.hypot(b.x + B[b.k].w/2 - u.x, b.y + B[b.k].h/2 - u.y); if (dd < bd) { bd = dd; u.tgB = b.id; } }
     if (!u.tgB) { const e = nearestEnemyOf(u, d.range); if (e && Math.hypot(e.x - u.x, e.y - u.y) > 1.5) u.tgU = e.id; } }
-  if (!u.tgB && !u.tgU && u.raid && aiKeep()) { stepMove(u, d, dt); return; }
+  if (!u.tgB && !u.tgU && u.raid && raidTargetKeep()) { stepMove(u, d, dt); return; }
   if (u.cd > 0) return;
   let tx, ty, bid = 0; const b = u.tgB && byId.get(u.tgB);
   if (b) { tx = b.x + B[b.k].w/2; ty = b.y + B[b.k].h/2; bid = b.id; }
@@ -431,7 +450,15 @@ function stepPlayerCatapult(u, d, dt) {
   u.cd = d.cd; u.fire = .6; u.fx = tx < u.x ? -1 : 1;
   stones.push({sx:u.x, sy:u.y - .4, tx:tx + (Math.random() - .5)*.6, ty:ty + (Math.random() - .5)*.6, t:0, dur:1.4, bid, dmg:d.sdmg, team:0, udmg:50});
 }
-function orderRaid(ids) { const us = ids.map(uById).filter(Boolean); for (const u of us) { u.raid = 1; u.path = []; u.nt = -1; } return us.length; }
+function orderRaid(ids, tm) {
+  const us = ids.map(uById).filter(Boolean); if (!us.length) return 0;
+  let targetTm = tm | 0;
+  if (!targetTm) { const keeps = aiKeeps(); if (keeps.length) {
+    const ax = us.reduce((s, u) => s + u.x, 0) / us.length, ay = us.reduce((s, u) => s + u.y, 0) / us.length;
+    let bd = 1e9; for (const k of keeps) { const d = Math.hypot(k.x + 1.5 - ax, k.y + 1.5 - ay); if (d < bd) { bd = d; targetTm = k.tm; } } } }
+  for (const u of us) { u.raid = 1; u.raidTm = targetTm || 1; u.path = []; u.nt = -1; u.fv = -1; }
+  flowDirty = true; return us.length;
+}
 function stepDirect(u, tx, ty, spd, dt) {
   const ox = u.x, oy = u.y, t0 = tileOf(u), wf = uWalk(u), ok = i => i === t0 || wf(i); moveTo(u, tx, ty, spd, dt);
   if (!ok(tileOf(u))) { const nx = u.x; u.x = ox; if (!ok(tileOf(u))) { u.x = nx; u.y = oy; if (!ok(tileOf(u))) { u.x = ox; u.y = oy; return false; } } }
@@ -458,10 +485,11 @@ function stepEnemy(u, dt) {
   if (u.k === 'stower' && u.dock) { if (!byId.has(u.dock)) u.dock = 0; return; }
   if (u.guard) return stepGuard(u, d, dt);
   if (d.siege) return stepMove(u, d, dt);
-  // fight nearby soldiers on the ground
+  // fight nearby soldiers on the ground (prefer the player; may bump other lords)
   let foe = null, fd = u.k === 'earcher' ? d.range : 1.8;
   const high = onWall(u);
-  for (const p of S.u) if (p.tm === 0 && p.hp > 0 && (u.k === 'earcher' || !p.el || high)) { const dd = Math.hypot(p.x-u.x, p.y-u.y); if (dd < fd) { fd = dd; foe = p; } }
+  for (const p of S.u) if (p.tm !== u.tm && p.hp > 0 && (u.k === 'earcher' || !p.el || high)) {
+    const dd = Math.hypot(p.x-u.x, p.y-u.y) + (p.tm === 0 ? 0 : 2.5); if (dd < fd) { fd = dd; foe = p; } }
   if (foe) {
     if (u.k === 'earcher') { if (u.cd <= 0) { shoot(u.x, u.y, foe, d.dmg, 1, 10, u.id); u.cd = d.cd; } return; }
     if (fd < .75) { if (u.cd <= 0) { hurtU(foe, d.dmg); u.cd = d.cd; u.atk = .2; } return; }
@@ -476,7 +504,9 @@ function stepGuard(u, d, dt) {   // the enemy lord's troops at home: man the tow
     else { u.el = 1; u.x = tw.x + 1 + u.jx*.6; u.y = tw.y + 1.15; const foe = nearestEnemyOf(u, d.range + 2.5);
       if (foe && u.cd <= 0) { shoot(u.x, u.y - .5, foe, d.dmg, u.tm, 26, u.id); u.cd = d.cd; u.fx = foe.x < u.x ? -1 : 1; } return; } }
   const R = A && A.alarm ? 15 : 8; let foe = null, fd = 1e9;
-  for (const p of S.u) if (p.tm === 0 && p.hp > 0) { const dh = Math.hypot(p.x - u.hx, p.y - u.hy), dd = Math.hypot(p.x - u.x, p.y - u.y); if ((dh < R || dd < (d.range || 1.8)) && dd < fd) { fd = dd; foe = p; } }
+  for (const p of S.u) if (p.tm !== u.tm && p.hp > 0) {
+    const pref = p.tm === 0 ? 0 : 3, dh = Math.hypot(p.x - u.hx, p.y - u.hy) + pref, dd = Math.hypot(p.x - u.x, p.y - u.y) + pref;
+    if ((dh < R || dd < (d.range || 1.8) + pref) && dd < fd) { fd = dd; foe = p; } }
   if (foe && !d.siege) { if (u.k === 'earcher') { if (fd < d.range) { if (u.cd <= 0) { shoot(u.x, u.y, foe, d.dmg, u.tm, 10, u.id); u.cd = d.cd; } return; } }
     else if (fd < .75) { if (u.cd <= 0) { hurtU(foe, d.dmg); u.cd = d.cd; u.atk = .2; } return; }
     guardGo(u, foe.x, foe.y, d.spd, dt); return; }
@@ -626,16 +656,17 @@ function stepRepairer(b, w, door, dt) {
     const imp = Math.floor(w.t/.6); if (imp !== w.imp) { w.imp = imp; if (particles.length < 250) puff(w.x*T + 8, w.y*T - 6, '#d8c8a8', 1); } return; }
   if (walkLeg(w, door.x, door.y, dt)) { w.st = 0; w.t = 0; }
 }
-const walkPeasant = i => groundOK(i, 0), walkPeasantAI = i => groundOK(i, 1);
+const walkPeasant = i => groundOK(i, 0);
+const walkForTm = tm => i => groundOK(i, tm | 0);
 function workerDoor(b, d) {
-  const gx = b.x + d.w/2, gy = b.y + d.h + .55, wf = (b.tm|0) ? walkPeasantAI : walkPeasant;
+  const gx = b.x + d.w/2, gy = b.y + d.h + .55, wf = walkForTm(b.tm | 0);
   const i = idx(Math.floor(gx), Math.floor(gy)); if (wf(i)) return {x:gx, y:gy};
   const n = nearestWalk(gx, gy, wf); return n || {x:gx, y:gy};
 }
 function nearestWalk(x, y, wf) { const sx = Math.floor(x), sy = Math.floor(y); if (inb(sx, sy) && wf(idx(sx, sy))) return null;
   for (let r = 1; r <= 4; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const nx = sx + dx, ny = sy + dy; if (inb(nx, ny) && wf(idx(nx, ny))) return {x:nx + .5, y:ny + .5}; } return null; }
 function walkLeg(w, tx, ty, dt, tm = 0) {   // peasants follow a path around trees, rocks, water, buildings and walls (gates let them through)
-  const key = Math.floor(tx) + ',' + Math.floor(ty), wf = tm ? walkPeasantAI : walkPeasant;
+  const key = Math.floor(tx) + ',' + Math.floor(ty), wf = walkForTm(tm | 0);
   // woodcutters stand on a tree tile to chop; anyone else stuck on a blocked tile is nudged onto grass first
   { const cur = idx(Math.floor(w.x), Math.floor(w.y)); if (inb(Math.floor(w.x), Math.floor(w.y)) && !wf(cur) && ter[cur] !== 1) { const n = nearestWalk(w.x, w.y, wf); if (n) { w.x = n.x; w.y = n.y; w.leg = null; w.path = null; } } }
   if (w.leg !== key) { if ((w.wait = (w.wait || 0) - dt) > 0) return false;
@@ -975,7 +1006,7 @@ function handleTap(sx, sy) {
   // tap own unit?
   let hit = null, hd = 22/cam.z;
   for (const u of S.u) if (u.tm === 0) { const uy = u.y*T - (u.el ? 18 : 0) - 8, d = Math.hypot(u.x*T - w.x, uy - w.y); if (d < Math.max(hd, 12)) { hd = d; hit = u; } }
-  if (sel.length && !hit) { const tb = bAt(tx, ty); if (tb && tb.tm) { const n = orderRaid(sel); toast('⚔ ' + n + ' soldier' + (n === 1 ? '' : 's') + ' attacking the enemy castle!'); marker = {x:(tx+.5)*T, y:(ty+.5)*T, t:1}; return; }
+  if (sel.length && !hit) { const tb = bAt(tx, ty); if (tb && tb.tm) { const n = orderRaid(sel, tb.tm); toast('⚔ ' + n + ' soldier' + (n === 1 ? '' : 's') + ' attacking the enemy castle!'); marker = {x:(tx+.5)*T, y:(ty+.5)*T, t:1}; return; }
     const n = orderMove(sel, tx, ty); if (n) { marker = {x:(tx+.5)*T, y:(ty+.5)*T, t:1}; tutCheck(); } else toast("They can't get there", 'bad'); return; }
   if (hit) { sel = [hit.id]; selB = null; renderSheet(); updateHint(); return; }
   const b = bAt(tx, ty);
@@ -1304,8 +1335,8 @@ const VS_TYPES = {
   coast:   {name:'Island Coast', icon:'🏝', tip:'Shore and islands linked by dirt causeways'}
 };
 const AI_COLORS = {1:'#c8302a', 2:'#c87a20', 3:'#7a2ac8'};
-const AIDIFF = {easy:{inc:.65, first:540, every:260, min:5, cap:14, train:12}, normal:{inc:1, first:420, every:200, min:7, cap:22, train:8}, hard:{inc:1.35, first:330, every:160, min:9, cap:30, train:6}};
-const AI_GOALS = [['woodcutter',1],['farm',1],['woodcutter',2],['quarry',1],['hovel',1],['barracks',1],['farm',2],['ring',0],['tower',2],['mine',1],['hovel',2],['farm',3],['tower',4],['woodcutter',3],['hovel',3],['farm',4]];
+const AIDIFF = {easy:{inc:.7, first:300, every:200, min:5, cap:16, train:10}, normal:{inc:1.05, first:210, every:150, min:6, cap:24, train:7}, hard:{inc:1.45, first:150, every:120, min:8, cap:32, train:5}};
+const AI_GOALS = [['woodcutter',1],['farm',1],['quarry',1],['barracks',1],['ring',0],['woodcutter',2],['hovel',1],['farm',2],['tower',2],['mine',1],['hovel',2],['farm',3],['tower',4],['woodcutter',3],['hovel',3],['farm',4]];
 const AISCALE = {easy:{f:.7, build:9}, normal:{f:1, build:6}, hard:{f:1.3, build:4}};
 const AI_UNIT_COST = {raider:{gold:10, food:5}, earcher:{gold:14, wood:6}, brute:{gold:28, iron:3}, ram:{wood:50, gold:30}, catapult:{wood:60, stone:30, gold:40}};
 
@@ -1319,13 +1350,19 @@ function saveVsPrefs(p) { try { localStorage.setItem(VS_PREF_KEY, JSON.stringify
 function vsStarts(enemies, n) {
   // classic 1v1 Medium keeps the old coordinates so saved Vs games still line up
   if (enemies === 1 && n === 88) return {player:{x:9, y:42}, ais:[{x:76, y:42, face:'W'}]};
-  const m = Math.max(8, Math.floor(n * .1));
-  const player = {x:m, y:((n/2)|0) - 1};
-  const ais = [];
-  if (enemies === 1) ais.push({x:n - m - 3, y:((n/2)|0) - 1, face:'W'});
-  else if (enemies === 2) { ais.push({x:n - m - 3, y:m, face:'W'}); ais.push({x:n - m - 3, y:n - m - 3, face:'W'}); }
-  else { ais.push({x:n - m - 3, y:m, face:'W'}); ais.push({x:n - m - 3, y:((n/2)|0) - 1, face:'W'}); ais.push({x:n - m - 3, y:n - m - 3, face:'W'}); }
-  return {player, ais};
+  const m = Math.max(8, Math.floor(n * .1)), mid = ((n / 2) | 0) - 1;
+  // player on the west; AIs on separate sides/corners so they don't stack on one edge
+  const player = {x:m, y:mid};
+  if (enemies === 1) return {player, ais:[{x:n - m - 3, y:mid, face:'W'}]};
+  if (enemies === 2) return {player, ais:[
+    {x:n - m - 3, y:m, face:'W'},           // north-east, gate toward player
+    {x:n - m - 3, y:n - m - 3, face:'W'}    // south-east
+  ]};
+  return {player, ais:[
+    {x:n - m - 3, y:mid, face:'W'},         // east
+    {x:mid, y:m, face:'S'},                 // north
+    {x:mid, y:n - m - 3, face:'N'}          // south
+  ]};
 }
 
 function genVsTerrain(seed, opts = {}) {
@@ -1342,10 +1379,14 @@ function genVsTerrain(seed, opts = {}) {
     if (typ === 2 || typ === 5) { const ox = Math.floor(cx) - 1, oy = Math.floor(cy) - 1;
       for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) if (inb(ox + i, oy + j) && !nearKeep(ox + i, oy + j, 8)) ter[idx(ox + i, oy + j)] = typ; } };
 
-  // fair starter woods / stone / iron near every keep
+  // fair starter woods / stone / iron near every keep, biased toward map center so edge starts stay playable
+  const cx0 = n / 2, cy0 = n / 2;
   for (const k of keeps) {
-    blob(k.x + 9, k.y - 8, 3.6, 1, 0); blob(k.x + 5, k.y + 10, 3.2, 1, 0);
-    blob(k.x + 8, k.y + 5, 2.2, 2, 0); blob(k.x + 12, k.y - 12, 2.0, 5, 0);
+    const dx = cx0 - k.x, dy = cy0 - k.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
+    blob(k.x + ux * 9 + uy * 3, k.y + uy * 9 - ux * 3, 3.6, 1, 0);
+    blob(k.x + ux * 6 - uy * 5, k.y + uy * 6 + ux * 5, 3.2, 1, 0);
+    blob(k.x + ux * 8, k.y + uy * 8, 2.2, 2, 0);
+    blob(k.x + ux * 11 - uy * 4, k.y + uy * 11 + ux * 4, 2.0, 5, 0);
   }
   const dens = type === 'forest' ? 22 : type === 'plains' ? 10 : 14;
   for (let i = 0, k = 0; i < dens && k < 400; k++) { const x = 3 + r() * (n - 6), y = 3 + r() * (n - 6); if (nearKeep(x, y, 10)) continue; blob(x, y, 2.2 + r() * 3.2, 1); i++; }
@@ -1355,9 +1396,9 @@ function genVsTerrain(seed, opts = {}) {
   if (type === 'lakes' || type === 'coast') {
     if (type === 'coast') { for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (x < 3 || y < 3 || x > n - 4 || y > n - 4) if (!nearKeep(x, y, 11)) ter[idx(x, y)] = 3; }
     for (let i = 0; i < (type === 'coast' ? 5 : 7); i++) blob(6 + r() * (n - 12), 6 + r() * (n - 12), 2.4 + r() * 2.2, 3);
-    // dirt fords / causeways between keeps
-    for (let i = 1; i < keeps.length; i++) {
-      const a = keeps[0], b = keeps[i]; const steps = Math.max(8, Math.hypot(b.x - a.x, b.y - a.y) | 0);
+    // dirt fords / causeways between every pair of keeps (player + AIs)
+    for (let i = 0; i < keeps.length; i++) for (let j = i + 1; j < keeps.length; j++) {
+      const a = keeps[i], b = keeps[j]; const steps = Math.max(8, Math.hypot(b.x - a.x, b.y - a.y) | 0);
       for (let s = 0; s <= steps; s++) { const x = Math.round(a.x + (b.x - a.x) * s / steps), y = Math.round(a.y + (b.y - a.y) * s / steps);
         for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (inb(x + dx, y + dy) && ter[idx(x + dx, y + dy)] === 3) ter[idx(x + dx, y + dy)] = 6; } }
   }
@@ -1370,21 +1411,25 @@ function genVsTerrain(seed, opts = {}) {
   for (const k of keeps) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (Math.hypot(x + .5 - k.x, y + .5 - k.y) < 9) ter[idx(x, y)] = 0;
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const i = idx(x, y); if ((x === 0 || y === 0 || x === n - 1 || y === n - 1) && ter[i] >= 2) ter[i] = 0; }
 
-  // connect every keep to the player
+  // carve dirt corridors so every keep can reach the player (and each other)
   const reach = (sx, sy) => { const seen = new Uint8Array(n * n), q = [idx(sx, sy)]; seen[q[0]] = 1;
     for (let h = 0; h < q.length; h++) { const x = q[h] % n, y = (q[h] / n) | 0; for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) { const nx = x + dx, ny = y + dy; if (!inb(nx, ny)) continue; const j = idx(nx, ny); if (!seen[j] && passT(j)) { seen[j] = 1; q.push(j); } } }
     return seen; };
-  const base = reach(KX + 1, KY + 1);
-  for (const a of starts.ais) if (!base[idx(a.x + 1, a.y + 1)]) {
-    const steps = Math.max(10, Math.hypot(a.x - KX, a.y - KY) | 0);
-    for (let s = 0; s <= steps; s++) { const x = Math.round(KX + 1 + (a.x + 1 - KX - 1) * s / steps), y = Math.round(KY + 1 + (a.y + 1 - KY - 1) * s / steps);
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (inb(x + dx, y + dy) && !passT(idx(x + dx, y + dy))) ter[idx(x + dx, y + dy)] = 6; } }
+  const carve = (ax, ay, bx, by) => {
+    const steps = Math.max(10, Math.hypot(bx - ax, by - ay) | 0);
+    for (let s = 0; s <= steps; s++) { const x = Math.round(ax + (bx - ax) * s / steps), y = Math.round(ay + (by - ay) * s / steps);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (inb(x + dx, y + dy) && !passT(idx(x + dx, y + dy))) ter[idx(x + dx, y + dy)] = 6; } };
+  let base = reach(KX + 1, KY + 1);
+  for (const a of starts.ais) if (!base[idx(a.x + 1, a.y + 1)]) { carve(KX + 1, KY + 1, a.x + 1, a.y + 1); base = reach(KX + 1, KY + 1); }
+  for (let i = 0; i < starts.ais.length; i++) for (let j = i + 1; j < starts.ais.length; j++) {
+    const a = starts.ais[i], b = starts.ais[j], seen = reach(a.x + 1, a.y + 1);
+    if (!seen[idx(b.x + 1, b.y + 1)]) carve(a.x + 1, a.y + 1, b.x + 1, b.y + 1); }
   return starts;
 }
 
 function mkAi(tm, face, diff) {
   return {tm, face, res:{wood:150, stone:80, food:80, gold:60, iron:0}, t:0, trainT:0, trained:0,
-    nextAttack:(AIDIFF[diff] || AIDIFF.normal).first + (tm - 1) * 40, attacks:0, alarm:0, skip:{}, workers:0, idle:0};
+    nextAttack:(AIDIFF[diff] || AIDIFF.normal).first + (tm - 1) * 18, attacks:0, alarm:0, skip:{}, workers:0, idle:0};
 }
 function newVsState(seed, opts = {}) {
   if (typeof opts === 'string') opts = {diff:opts};   // old call newVsState(seed, 'normal')
@@ -1397,7 +1442,10 @@ function newVsState(seed, opts = {}) {
   addB('keep', KX, KY); addB('stockpile', KX + 4, KY + 1); addB('granary', KX - 3, KY + 1);
   starts.ais.forEach((s, i) => {
     const tm = i + 1, A = mkAi(tm, s.face, diff); S.ais.push(A);
-    addB('keep', s.x, s.y).tm = tm; addB('stockpile', s.x - 3, s.y + 1).tm = tm; addB('granary', s.x + 4, s.y + 1).tm = tm;
+    addB('keep', s.x, s.y).tm = tm;
+    if (s.face === 'S') { addB('stockpile', s.x - 3, s.y + 4).tm = tm; addB('granary', s.x + 4, s.y + 4).tm = tm; }
+    else if (s.face === 'N') { addB('stockpile', s.x - 3, s.y - 2).tm = tm; addB('granary', s.x + 4, s.y - 2).tm = tm; }
+    else { addB('stockpile', s.x - 3, s.y + 1).tm = tm; addB('granary', s.x + 4, s.y + 1).tm = tm; }
   });
   S.ai = S.ais[0];   // compat alias for the first lord
   reocc(); workers.clear(); projectiles = []; particles = []; stones = []; flowDirty = regDirty = true;
@@ -1512,7 +1560,7 @@ function aiPlace(A, R, k, ak) { const c = B[k].cost; if (Object.entries(c).some(
   const p = aiFind(k, ak, curRing(ak)); if (!p) { A.skip[k] = S.t + 60; return 'none'; }
   aiPay(R, c); const nb = aiAdd(k, p.x, p.y, ak.tm); if (aiSealed(ak)) { S.b = S.b.filter(b => b !== nb); reocc(); for (const [r, v] of Object.entries(c)) R[r] += v; A.skip[k] = S.t + 40; return 'none'; } return 'did'; }
 function aiTargets(A, cnt) {
-  const m = S.t/60 * (AISCALE[S.vs.diff] || AISCALE.normal).f / Math.sqrt(S.ais.length), prods = cnt('woodcutter') + cnt('farm') + cnt('quarry') + cnt('mine');
+  const m = S.t/60 * (AISCALE[S.vs.diff] || AISCALE.normal).f / (1 + .15*(S.ais.length-1)), prods = cnt('woodcutter') + cnt('farm') + cnt('quarry') + cnt('mine');
   return [['hovel', prods + 3 > 8 + 6*cnt('hovel') ? Math.min(10, cnt('hovel') + 1) : 0], ['farm', Math.min(12, 4 + Math.floor(m/1.5))], ['woodcutter', Math.min(8, 3 + Math.floor(m/2.5))],
     ['ring', (m >= 8 && A.res.stone >= 120) || A.fullIn ? 1 : -1], ['quarry', Math.min(3, 1 + Math.floor(m/4))], ['mine', Math.min(2, 1 + Math.floor(m/6))], ['tower', A.lvl ? 12 : 4],
     ['granary', cnt('farm') >= 6 ? 2 : 1], ['stockpile', cnt('woodcutter') >= 5 ? 2 : 1], ['market', m >= 5 ? 1 : 0], ['hovel', A.res.wood > 250 ? Math.min(10, cnt('hovel') + 1) : 0]]; }
@@ -1558,7 +1606,7 @@ function stepOneAI(A, dt) {
   A.t += dt; if (A.t < 1) return; const t1 = A.t; A.t = 0;
   const ak = aiKeep(A.tm); if (!ak) return;
   const D = AIDIFF[S.vs.diff] || AIDIFF.normal, R = A.res, mine = S.b.filter(b => b.tm === A.tm), cnt = k => mine.reduce((n, b) => n + (b.k === k), 0);
-  const scale = 1 / Math.sqrt(S.ais.length);   // more lords → each builds a bit slower so Large+3 stays smooth
+  const scale = 1 / (1 + .12 * (S.ais.length - 1));   // mild multi-lord income soft-cap (keeps Large+3 smooth, still competitive)
   R.wood += (.3 + .3*cnt('woodcutter')) * D.inc * t1 * scale; R.stone += (.35 + .25*cnt('quarry')) * D.inc * t1 * scale;
   R.food += (.25 + .3*cnt('farm')) * D.inc * t1 * scale; R.gold += (.45 + .15*cnt('hovel') + .3*cnt('market')) * D.inc * t1 * scale; R.iron += .1*cnt('mine') * D.inc * t1 * scale;
   const army = S.u.filter(u => u.tm === A.tm); R.food = Math.max(0, R.food - army.length * .03 * t1);
@@ -1568,21 +1616,22 @@ function stepOneAI(A, dt) {
   aiBuild(A, R, cnt, ak);
   if ((A.rt = (A.rt || 0) - t1) <= 0) { A.rt = 3 + S.ais.length; aiRoles(A, ak); }
   A.trainT += t1; const br = mine.find(b => b.k === 'barracks');
-  const cap = Math.floor((D.cap + Math.min(Math.floor(D.cap/2), 2*A.attacks)) / Math.sqrt(S.ais.length));
-  if (br && A.trainT >= D.train * (1 + .25*(S.ais.length-1)) && army.length < cap) {
+  const nL = S.ais.length, soft = 1 + .12 * (nL - 1);   // mild multi-lord soft-cap (not √n) so 3 AIs still pressure
+  const cap = Math.floor((D.cap + Math.min(Math.floor(D.cap/2), 2*A.attacks)) / soft);
+  if (br && A.trainT >= D.train * (1 + .1*(nL-1)) && army.length < cap) {
     const pat = ['raider','earcher','raider','brute','earcher','raider'], has = k => army.some(u => u.k === k);
     let k = A.attacks >= 2 && !has('ram') && Math.random() < .5 ? 'ram' : A.attacks >= 3 && !has('catapult') && Math.random() < .5 ? 'catapult' : pat[A.trained % pat.length];
     if (k === 'brute' && !cnt('mine')) k = 'raider';
     if (aiPay(R, AI_UNIT_COST[k])) { A.trainT = 0; A.trained++; const u = addU(k, A.tm, br.x + 1.5, br.y + 3.4), h = aiHome(ak, k); u.guard = 1; u.hx = h.x; u.hy = h.y; const m = 1 + S.t/1800; u.hp = u.mhp = Math.round(u.hp*m); }
   }
   if (S.t >= A.nextAttack) { const g = army.filter(u => u.guard && !u.post && u.role !== 'post');
-    if (g.length >= Math.max(3, Math.ceil(D.min / Math.sqrt(S.ais.length)))) {
-      const size = Math.min(Math.ceil(g.length*.7), (S.vs.diff === 'easy' ? 4 : 6) + A.attacks*(S.vs.diff === 'easy' ? 3 : 4));
+    if (g.length >= Math.max(3, D.min - (nL - 1))) {
+      const size = Math.min(Math.ceil(g.length*.75), (S.vs.diff === 'easy' ? 5 : 7) + A.attacks*(S.vs.diff === 'easy' ? 3 : 4));
       const go = g.sort((a, b) => (a.k === 'earcher') - (b.k === 'earcher')).slice(0, size);
       for (const u of go) { u.guard = 0; u.nt = -1; u.edge = 9; u.role = 0; u.gp = null; }
-      A.attacks++; A.nextAttack = S.t + D.every + (S.ais.length - 1) * 30;
+      A.attacks++; A.nextAttack = S.t + D.every + (nL - 1) * 12;
       toast('⚔ Lord ' + A.tm + ' attacks with ' + go.length + ' troops!', 'bad', 4000); try { navigator.vibrate && navigator.vibrate([60, 40, 60]); } catch (e) {} }
-    else A.nextAttack = S.t + 30; }
+    else A.nextAttack = S.t + 18; }
 }
 function stepAI(dt) {
   if (!S.ais || !S.ais.length) return;
@@ -1594,7 +1643,7 @@ function stepAI(dt) {
 
 // ---------- save / load ----------
 let memSave = null;
-function serialize() { return JSON.stringify({...S, b:S.b.map(({id,k,x,y,hp,out,tm}) => ({id,k,x,y,hp,out,tm})), u:S.u.map(({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid,post,tw,role,wp}) => ({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid,post,tw,role,wp}))}); }
+function serialize() { return JSON.stringify({...S, b:S.b.map(({id,k,x,y,hp,out,tm}) => ({id,k,x,y,hp,out,tm})), u:S.u.map(({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid,raidTm,post,tw,role,wp}) => ({id,k,tm,x,y,hp,mhp,px,py,edge,guard,hx,hy,raid,raidTm,post,tw,role,wp}))}); }
 function save() { if (!S || S.over) return; const s = serialize(); memSave = s; try { localStorage.setItem(SAVE_KEY, s); } catch (e) {} }
 function loadSaved() { let s = memSave; try { s = localStorage.getItem(SAVE_KEY) || s; } catch (e) {} if (!s) return null; try { const o = JSON.parse(s); return o && o.v === 1 ? o : null; } catch (e) { return null; } }
 function clearSave() { memSave = null; try { localStorage.removeItem(SAVE_KEY); } catch (e) {} }
@@ -1706,5 +1755,5 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 
 // test hooks
 window.HTK = {get S() { return S; }, makeFling, fling, B, UNIT, step, place, canPlace, commitWall, wallPlan, recruit, orderMove, spawnWave, sendWave, computeFlow, cam, s2w, w2s, newState, start, save, loadSaved, restore,
-  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, newVsState, genVsTerrain, stepAI, aiKeep, aiKeeps, aiOf, loadVsPrefs, VS_TYPES, VS_SIZES, orderRaid, aiFind, aiFits, curRing, canReach, ensureReg, get regP() { return regP; }, get regA() { return regA; }, uRegion, get flowP() { return flowP; }, TAX, pitAt, FOFF, get fOff() { return fOff; }, get ghost() { return ghost; }, trade, TRADE, WEAP, renderSheet, get selB() { return selB; }, set selB(v) { selB = v; }, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
+  get flow() { return flow; }, get ter() { return ter; }, get occ() { return occ; }, idx, get N() { return N; }, T, get KX() { return KX; }, get KY() { return KY; }, setTool, idle, cap, soldiers, demolish, bAt, VERSION, get tool() { return tool; }, get sel() { return sel; }, HOLD_MS, get drag() { return drag; }, workers, treesLeft, get falls() { return falls; }, get stones() { return stones; }, waveComp, waveText, addU, byId, bestStep, astarPeasant: (a, b, c, d) => astar(a, b, c, d, walkPeasant, N*N), get flowDirty() { return flowDirty; }, startCustom, stopGame, newVsState, genVsTerrain, stepAI, aiKeep, aiKeeps, raidTargetKeep, aiOf, loadVsPrefs, VS_TYPES, VS_SIZES, orderRaid, aiFind, aiFits, curRing, canReach, ensureReg, get regP() { return regP; }, get regA() { return regA; }, uRegion, get flowP() { return flowP; }, TAX, pitAt, FOFF, get fOff() { return fOff; }, get ghost() { return ghost; }, trade, TRADE, WEAP, renderSheet, get selB() { return selB; }, set selB(v) { selB = v; }, newStateFromMap, rleEncode, rleDecode, genTerrain, showTitle, IMG, get running() { return running; }};
 })();
