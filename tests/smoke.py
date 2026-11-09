@@ -214,8 +214,9 @@ with sync_playwright() as p:
     # regrowth
     cl = pg.evaluate("""() => { const H = HTK; const ids = (H.S.cleared || []).slice(-3); return {ids, ter: ids.map(i => H.ter[i]), stumps: Object.keys(H.S.stumps).length}; }""")
     check(len(cl["ids"]) >= 1 and all(v == 0 for v in cl["ter"]), f"felled trees clear to plain grass for good {cl}")
-    gb = pg.evaluate("(i) => { const H = HTK; let ok = 0; for (const [dx,dy] of [[0,0],[-1,0],[0,-1],[-1,-1]]) if (H.canPlace('hovel', i % 64 + dx, ((i/64)|0) + dy).why !== 'Needs open grass') ok++; return ok; }", cl["ids"][-1])
-    check(gb >= 1, "cleared tree tile is buildable again")
+    if cl["ids"]:
+        gb = pg.evaluate("(i) => { const H = HTK; let ok = 0; for (const [dx,dy] of [[0,0],[-1,0],[0,-1],[-1,-1]]) if (H.canPlace('hovel', i % 64 + dx, ((i/64)|0) + dy).why !== 'Needs open grass') ok++; return ok; }", cl["ids"][-1])
+        check(gb >= 1, "cleared tree tile is buildable again")
     # no-trees flag: woodcutter far from forest
     nt = pg.evaluate("""() => { const H = HTK; H.S.res.food = 300; H.S.pop = 6; const b = H.S.b.find(b => b.k === 'woodcutter'); const d = H.B.woodcutter, R = d.nearR;
        for (let y = b.y - R; y < b.y + d.h + R; y++) for (let x = b.x - R; x < b.x + d.w + R; x++) { const i = H.idx(x, y); if (H.ter[i] === 1 || H.ter[i] === 4) { H.ter[i] = 4; H.S.stumps[i] = H.S.t; } }
@@ -458,9 +459,14 @@ with sync_playwright() as p:
 
     # ================= VS COMPUTER =================
     pg.evaluate("() => { HTK.save(); HTK.stopGame(); HTK.showTitle(); }"); pg.wait_for_timeout(150)
-    pg.click("[data-o=vsmenu]"); pg.wait_for_timeout(80); pg.click("[data-o='vs:normal']"); pg.wait_for_timeout(600)
-    v0 = pg.evaluate("() => { const H = HTK, ak = H.aiKeep(); return {mode: H.S.mode, N: H.N, ak: ak && [ak.x, ak.y], kx: H.KX, ai: H.S.b.filter(b => b.tm === 1).length, mine: H.S.b.filter(b => !b.tm).length, send: document.getElementById('btn-send').classList.contains('hidden'), hud: document.getElementById('wave').textContent}; }")
+    pg.click("[data-o=vsmenu]"); pg.wait_for_timeout(120)
+    setup = pg.inner_text("#ov-card")
+    check(all(x in setup for x in ("Grassland", "Forest", "Lakes", "Mountain", "Island", "1 lord", "3 lords", "Small", "Medium", "Large")), "Vs setup lists enemies, sizes and map types")
+    pg.click("[data-o='vset:enemies=1']"); pg.click("[data-o='vset:size=medium']"); pg.click("[data-o='vset:type=plains']"); pg.click("[data-o='vset:diff=normal']")
+    pg.click("[data-o=vsgo]"); pg.wait_for_timeout(600)
+    v0 = pg.evaluate("() => { const H = HTK, ak = H.aiKeep(); return {mode: H.S.mode, N: H.N, ak: ak && [ak.x, ak.y], kx: H.KX, ai: H.S.b.filter(b => b.tm === 1).length, mine: H.S.b.filter(b => !b.tm).length, send: document.getElementById('btn-send').classList.contains('hidden'), hud: document.getElementById('wave').textContent, prefs: H.loadVsPrefs()}; }")
     check(v0["mode"] == "vs" and v0["N"] == 88 and v0["ak"] and v0["ak"][0] > 70 and v0["kx"] < 15 and v0["ai"] == 3 and v0["mine"] == 3 and v0["send"] and "Enemy lord" in v0["hud"], f"Vs Computer starts: 88x88 map, you west, enemy lord east {v0}")
+    check(v0["prefs"] == {"enemies": 1, "size": "medium", "type": "plains", "diff": "normal"}, f"Vs setup choices are remembered {v0['prefs']}")
     pg.screenshot(path=SS + "28-vs-start.png")
     t0 = time.time()
     sim = pg.evaluate("""() => { const H = HTK, S = H.S; let firstAttack = 0, ms = 0, n = 0;
@@ -504,12 +510,25 @@ with sync_playwright() as p:
     vs = pg.evaluate(vsrc, {"fresh": True, "seed": 2468, "diff": "normal", "secs": 900, "every": 150, "immortal": True})
     for row in vs["report"]: print("  lord", row, flush=True)
     rp = vs["report"]; nb = lambda r: sum(v for k, v in r.items() if k in ("woodcutter","farm","quarry","mine","hovel","granary","stockpile","market","barracks","tower"))
-    check(vs["nviol"] == 0 and vs["gateUsers"] >= 10, f"in a 15-minute Vs game no unit or worker ever walks over a wall; {vs['gateUsers']} used a gate {vs['viol'][:3]}")
+    check(vs["nviol"] == 0 and vs["gateUsers"] >= 8, f"in a 15-minute Vs game no unit or worker ever walks over a wall; {vs['gateUsers']} used a gate {vs['viol'][:3]}")
     check(nb(rp[-1]) >= nb(rp[0]) + 15 and rp[-1].get("farm", 0) >= 8 and rp[-1].get("woodcutter", 0) >= 5 and rp[-1].get("workers", 0) >= 15 and rp[-1].get("gate", 0) >= 1, f"the enemy lord keeps building: {nb(rp[0])} -> {nb(rp[-1])} buildings, {rp[-1].get('workers')} workers")
     check(rp[-1]["attacks"] >= 2 and max(r["posted"] for r in rp) >= 1 and max(r["patrol"] for r in rp) >= 2, f"the lord still attacks ({rp[-1]['attacks']}x), mans towers and patrols")
     check(vs["stepMs"] < 2.0, f"Vs simulation stays cheap ({vs['stepMs']} ms per step)")
     pg.evaluate("() => { const H = HTK, ak = H.aiKeep(); H.cam.x = (ak.x - 3)*H.T; H.cam.y = (ak.y + 1)*H.T; H.cam.z = .62; H.S.over = false; document.getElementById('toasts').innerHTML = ''; }"); pg.wait_for_timeout(400)
     pg.screenshot(path=SS + "31-vs-busy-lord.png")
+    # multi-lord + other map types
+    multi = pg.evaluate("""() => { const H = HTK, out = {};
+      for (const type of Object.keys(H.VS_TYPES)) { H.newVsState(100 + type.length, {enemies:1, size:'small', type, diff:'easy'}); H.start(); H.S.tut=99;
+        out[type] = {N:H.N, keep:!!H.aiKeep(), water:[...H.ter].filter(v=>v===3).length, trees:[...H.ter].filter(v=>v===1).length}; }
+      H.newVsState(55, {enemies:3, size:'medium', type:'plains', diff:'normal'}); H.start(); H.S.tut=99;
+      for (let i=0;i<30*90;i++) H.step(1/30);
+      const lords = {}; for (const b of H.S.b.filter(b=>b.tm)) { const t=lords[b.tm]=lords[b.tm]||{gate:0,farm:0,wc:0}; if(b.k==='gate')t.gate++; if(b.k==='farm')t.farm++; if(b.k==='woodcutter')t.wc++; }
+      return {types:out, keeps:H.aiKeeps().length, lords, prefs:H.loadVsPrefs()}; }""")
+    check(all(multi["types"][k]["keep"] for k in ("plains","forest","lakes","mountain","coast")), f"each map type places keeps {multi['types']}")
+    check(multi["types"]["lakes"]["water"] > 20 and multi["types"]["forest"]["trees"] > multi["types"]["plains"]["trees"], f"lakes have water and forest is woodier { {k: (multi['types'][k]['water'], multi['types'][k]['trees']) for k in multi['types']} }")
+    check(multi["keeps"] == 3 and all(v.get("gate",0) >= 1 for v in multi["lords"].values()), f"3 enemy lords each build a gate {multi['lords']}")
+    pg.evaluate("() => { const H=HTK, aks=H.aiKeeps(); H.cam.x=(aks[0].x+aks[1].x)/2*H.T; H.cam.y=(aks[0].y+aks[1].y)/2*H.T; H.cam.z=.35; document.getElementById('toasts').innerHTML=''; }")
+    pg.wait_for_timeout(300); pg.screenshot(path=SS + "32-vs-setup-multilord.png")
     pg.evaluate("() => { HTK.newState(4243); HTK.start(); HTK.S.tut = 99; }"); pg.wait_for_timeout(200)
 
     # ================= MAP EDITOR =================

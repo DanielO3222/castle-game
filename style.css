@@ -132,3 +132,10 @@ textarea.ed-in{font:12px ui-monospace,monospace;word-break:break-all;resize:none
 .mh{font-size:11px;opacity:.7;padding:0 2px}.mr{padding:2px 0;border-top:1px solid #0000001a;font-size:13px}.mr b{text-align:center}
 .mr .sm{height:32px;font-size:13px;min-width:0;padding:0 4px}
 .mr .sm[data-a^=sell]{background:linear-gradient(#4f9a42,#2f6726);border-color:#7cc46c;color:#fff}
+
+/* Vs Computer setup */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 10px}
+.chip{background:#3a2a1c;color:var(--parch);border:1px solid #7a5a32;border-radius:999px;padding:8px 12px;font-size:13px;min-height:36px;flex:0 0 auto}
+.chip.on{background:linear-gradient(#8a5a28,#6a4020);border-color:#e0b060;box-shadow:0 0 0 1px #e0b06055}
+.vs-lbl{margin:8px 0 2px;font-size:12px;opacity:.75;text-transform:uppercase;letter-spacing:.04em}
+.vs-tip{font-size:12px;opacity:.8;margin:2px 0 8px}

@@ -76,3 +76,7 @@ The **Market** buys and sells every good (wood, stone, iron, food and all five w
 - **Walls really block.** Nobody walks through or over a wall, palisade or tower any more: not your peasants, not your soldiers, not the enemy lord's people. The only way through is your own **Gatehouse** (enemies have to smash a wall or gate). Soldiers can still climb onto their own walls, but only come down on the side they went up.
 - If you wall in a worker with no gate, the building shows 🚧 and a "Walled in" hint, and a toast tells you to add a Gatehouse. Troops ordered somewhere they can't reach go as close as they can.
 - **The enemy lord is busy now.** His peasants really walk out to chop trees, quarry, mine and farm and carry the goods home. He keeps building over the whole game (more farms, woodcutters, quarries, mines, hovels, a second granary and stockpile, a market), always builds the gatehouse first, and later throws a bigger outer wall with more towers around his castle. His archers man the towers, half his soldiers patrol inside the walls and the rest guard the gate. Easy builds slower, Hard faster.
+
+## v1.5.3
+- **Vs Computer setup**: before a match you pick how many enemy lords (1–3), map size (Small 64 / Medium 88 / Large 112), map type (Grassland, Forest, Lakes & River, Mountain Pass, Island Coast) and difficulty. Choices are remembered.
+- Each enemy lord builds its own castle with a gate, farms and an army on a fair start. Destroy every enemy keep to win. Large maps with 3 lords keep AI work staggered for phone speed.
